@@ -1,0 +1,20 @@
+.sidebar{width:218px;min-width:218px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.sb-brand{display:flex;align-items:center;gap:10px;padding:18px 16px;border-bottom:1px solid var(--border)}
+.sb-brand-icon{width:34px;height:34px;border-radius:9px;background:rgba(37,99,235,.15);display:flex;align-items:center;justify-content:center;color:#2563eb;font-size:16px}
+.sb-brand-name{font-size:13px;font-weight:700;letter-spacing:.4px;color:var(--t1)}
+.sb-brand-sub{font-size:9px;color:#64748b;margin-top:1px}
+.sb-nav{flex:1;padding:8px 0;display:flex;flex-direction:column}
+.sb-link{display:flex;align-items:center;gap:11px;padding:11px 18px;color:#94a3b8;font-size:13px;font-weight:500;background:none;border:none;width:100%;text-align:left;transition:background .15s,color .15s;cursor:pointer}
+.sb-link i{width:18px;text-align:center;font-size:14px}
+.sb-link:hover{color:var(--t1);background:rgba(255,255,255,.03)}
+.sb-link.active{color:var(--t1);background:rgba(37,99,235,.14);box-shadow:inset 3px 0 0 #2563eb}
+.sb-status{padding:14px 16px;border-top:1px solid var(--border);background:rgba(0,0,0,.05)}
+.sb-status-row{display:flex;align-items:center;gap:8px;margin-bottom:13px}
+.sb-dot{width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 8px rgba(16,185,129,.5);flex-shrink:0;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.55)}60%{box-shadow:0 0 0 5px rgba(16,185,129,0)}}
+.sb-status-title{font-size:11px;font-weight:600;color:var(--t1)}
+.sb-status-ok{font-size:9px;color:#10b981;margin-top:1px}
+.sb-bar{display:grid;grid-template-columns:1fr auto;font-size:9px;color:#64748b;margin-bottom:9px}
+.sb-bar-track{grid-column:1/-1;height:3px;background:var(--border2);border-radius:2px;overflow:hidden;margin-top:3px}
+.sb-bar-fill{height:100%;background:#2563eb;border-radius:2px;transition:width .6s ease}
+.sb-footer{padding:10px 16px;font-size:9px;color:#475569;border-top:1px solid var(--border)}
