@@ -1,5 +1,25 @@
 # 🛡️ Safety Stop AI — Real-Time Compliance Monitor
 
+<div align="center">
+
+[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8.0-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vite.dev/)
+
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.x-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white)](https://opencv.org/)
+[![MediaPipe](https://img.shields.io/badge/MediaPipe-Google-00C7B7?style=for-the-badge&logo=google&logoColor=white)](https://google.github.io/mediapipe/)
+[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+
+[![Git LFS](https://img.shields.io/badge/Git_LFS-Enabled-orange?style=for-the-badge&logo=git-lfs&logoColor=white)](https://git-lfs.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-Database-07405E?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![YOLOv8](https://img.shields.io/badge/YOLOv8-Ultralytics-blueviolet?style=for-the-badge)](https://github.com/ultralytics/ultralytics)
+
+</div>
+
+---
+
 Safety Stop AI is a state-of-the-art compliance monitoring system powered by **YOLOv8**, **ByteTrack**, and **MediaPipe**. It processes camera feeds to detect stop line violations (traffic mode) and monitor driver fatigue and distractions (DMS driver mode) in real-time.
 
 ---
