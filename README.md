@@ -25,7 +25,7 @@ Safety Stop AI is a state-of-the-art compliance monitoring system powered by **Y
 ---
 
 ## 💻 Tech Stack & Features
-* **Backend:** FastAPI (Python), Uvicorn, SQLite, PyTorch, YOLOv8, MediaPipe, EasyOCR.
+* **Backend:** FastAPI (Python), Uvicorn, SQLite, PyTorch, YOLOv8, MediaPipe, PaddleOCR.
 * **Frontend:** React, Vite, Tailwind-like custom Vanilla CSS dashboard.
 * **Hardware-Aware:** Auto-detects NVIDIA GPUs via PyTorch CUDA support, falling back gracefully to optimized CPU threads.
 * **Dual Run Configurations:** Start instantly with Docker Compose or via a manual step-by-step local installation.
