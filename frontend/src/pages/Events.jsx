@@ -3,6 +3,130 @@ import { snapshotUrl, api } from '../api'
 import './Pages.css'
 
 /* ─────────────────────────── EVIDENCE IMAGE PREVIEW MODAL ─────────────────────────── */
+function SaudiPlate({ licensePlate, plateAr }) {
+  if (!licensePlate) return null;
+  
+  // Clean plate inputs (extract digits and letters)
+  const numbers = (licensePlate || '').match(/\d+/)?.[0] || '';
+  const letters = (licensePlate || '').replace(/\d+/g, '').replace(/[^a-zA-Z]/g, '').toUpperCase();
+  
+  // Translation maps (mapping English digits and characters to standard Saudi license symbols)
+  const digitsMap = {
+    '0': '٠', '1': '١', '2': '٢', '3': '٣', '4': '٤',
+    '5': '٥', '6': '٦', '7': '٧', '8': '٨', '9': '٩'
+  };
+  const lettersMap = {
+    'A': 'أ', 'B': 'ب', 'J': 'ح', 'D': 'د', 'R': 'ر',
+    'S': 'س', 'X': 'ص', 'T': 'ط', 'E': 'ع', 'G': 'ق',
+    'K': 'ك', 'L': 'ل', 'M': 'م', 'N': 'ن', 'H': 'هـ',
+    'V': 'و', 'Y': 'ى', 'Z': 'ز'
+  };
+  
+  // Translate English plate to Arabic dynamically if plateAr is not set
+  const translatedNum = numbers.split('').map(d => digitsMap[d] || d).join('');
+  const translatedLetters = letters.split('').map(l => lettersMap[l] || l).join(' ');
+  
+  let cleanPlateAr = plateAr;
+  if (!cleanPlateAr) {
+    cleanPlateAr = translatedLetters;
+  }
+  const cleanNumAr = translatedNum;
+
+  return (
+    <div style={{
+      width: '240px',
+      height: '80px',
+      background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 50%, #cbd5e1 100%)',
+      border: '4px solid #334155',
+      borderRadius: '8px',
+      boxShadow: '0 10px 25px rgba(0, 0, 0, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.6)',
+      display: 'flex',
+      position: 'relative',
+      fontFamily: "'Inter', sans-serif",
+      overflow: 'hidden',
+      userSelect: 'none'
+    }}>
+      {/* English Part (Left) */}
+      <div style={{
+        flex: '1.2',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRight: '3px solid #334155',
+        padding: '2px'
+      }}>
+        <div style={{
+          fontSize: '22px',
+          fontWeight: '900',
+          letterSpacing: '1px',
+          color: '#1e293b',
+          lineHeight: '1.1'
+        }}>
+          {numbers}
+        </div>
+        <div style={{
+          fontSize: '11px',
+          fontWeight: '800',
+          letterSpacing: '2px',
+          color: '#475569',
+          marginTop: '4px',
+          textTransform: 'uppercase'
+        }}>
+          {letters.split('').join(' ')}
+        </div>
+      </div>
+      
+      {/* Vertical divider info (Middle) */}
+      <div style={{
+        width: '35px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '6px 0',
+        borderRight: '3px solid #334155',
+        fontSize: '7px',
+        fontWeight: '900',
+        color: '#475569',
+        backgroundColor: '#f1f5f9'
+      }}>
+        <div style={{ transform: 'scale(0.95)' }}>KSA</div>
+        <div style={{ fontSize: '10px', color: '#1e293b', lineHeight: '1' }}>🇸🇦</div>
+        <div style={{ fontSize: '6px' }}>السعودية</div>
+      </div>
+      
+      {/* Arabic Part (Right) */}
+      <div style={{
+        flex: '1.2',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '2px'
+      }}>
+        <div style={{
+          fontSize: '24px',
+          fontWeight: '900',
+          color: '#1e293b',
+          lineHeight: '1.1'
+        }}>
+          {cleanNumAr}
+        </div>
+        <div style={{
+          fontSize: '13px',
+          fontWeight: '800',
+          color: '#475569',
+          marginTop: '2px',
+          direction: 'rtl'
+        }}>
+          {cleanPlateAr}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ImageModal({ preview, onClose }) {
   if (!preview) return null;
   const src = typeof preview === 'string' ? preview : preview.src;
@@ -14,63 +138,197 @@ function ImageModal({ preview, onClose }) {
   const crossedLineIdx = typeof preview === 'object' ? preview.crossedLineIdx : null;
 
   const cleanEventType = (eventType || '').replace(' (Pedestrian Crossing)', '');
-  const lineSuffix = crossedLineIdx !== undefined && crossedLineIdx !== null ? ` [Line ${crossedLineIdx + 1}]` : '';
-  const titleText = cameraName && cleanEventType && timestamp
-    ? `${cameraName} — ${cleanEventType}${lineSuffix} [${timestamp}]`
-    : 'Evidentiary Infraction Snapshot Preview';
+  const isPedestrian = (eventType || '').includes('Pedestrian');
 
   return (
-    <div className="modal-overlay" style={{ zIndex: 9999, background: 'rgba(0, 0, 0, 0.65)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+    <div className="modal-overlay" style={{
+      zIndex: 9999,
+      background: 'rgba(7, 10, 20, 0.82)',
+      backdropFilter: 'blur(16px)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }} onClick={onClose}>
       <div className="modal" style={{
-        maxWidth: '85vw',
-        width: 'auto',
-        boxShadow: '0 25px 60px rgba(0, 0, 0, 0.4)',
+        width: 'min(92vw, 1080px)',
+        height: '78vh',
+        boxShadow: '0 30px 80px rgba(0, 0, 0, 0.65)',
         padding: '0',
-        borderRadius: '8px',
-        overflow: 'hidden'
+        borderRadius: '16px',
+        overflow: 'hidden',
+        background: 'var(--panel)',
+        border: '1px solid var(--border)',
+        display: 'flex',
+        flexDirection: 'row',
+        position: 'relative'
       }} onClick={e => e.stopPropagation()}>
-        <div className="modal-head" style={{ padding: '12px 18px', background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <span style={{ fontSize: '11px', fontWeight: '700', letterSpacing: '0.5px', color: '#ff9d43' }}>
-              <i className="fa-solid fa-file-image" style={{ marginRight: '6px' }} /> {titleText}
+        
+        {/* Left Side: Snapshot viewer (70% width) */}
+        <div style={{
+          flex: '1.1',
+          display: 'flex',
+          flexDirection: 'column',
+          background: '#070a13',
+          position: 'relative',
+          minWidth: 0
+        }}>
+          {/* Glass Header */}
+          <div style={{
+            padding: '16px 20px',
+            background: 'rgba(255, 255, 255, 0.02)',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <span style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: '#ef4444',
+              display: 'inline-block',
+              boxShadow: '0 0 10px #ef4444'
+            }} />
+            <span style={{ fontSize: '11px', fontWeight: '700', letterSpacing: '1px', color: 'var(--t1)', textTransform: 'uppercase' }}>
+              Violation Evidence Snapshot
             </span>
-            {licensePlate && (
+          </div>
+
+          {/* Image Container with HUD decorations */}
+          <div style={{
+            flex: '1',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'relative',
+            overflow: 'hidden',
+            padding: '10px'
+          }}>
+            {/* HUD Corner Accents */}
+            <div style={{ position: 'absolute', top: 20, left: 20, width: 12, height: 12, borderLeft: '2px solid rgba(255, 255, 255, 0.25)', borderTop: '2px solid rgba(255, 255, 255, 0.25)' }} />
+            <div style={{ position: 'absolute', top: 20, right: 20, width: 12, height: 12, borderRight: '2px solid rgba(255, 255, 255, 0.25)', borderTop: '2px solid rgba(255, 255, 255, 0.25)' }} />
+            <div style={{ position: 'absolute', bottom: 20, left: 20, width: 12, height: 12, borderLeft: '2px solid rgba(255, 255, 255, 0.25)', borderBottom: '2px solid rgba(255, 255, 255, 0.25)' }} />
+            <div style={{ position: 'absolute', bottom: 20, right: 20, width: 12, height: 12, borderRight: '2px solid rgba(255, 255, 255, 0.25)', borderBottom: '2px solid rgba(255, 255, 255, 0.25)' }} />
+            
+            <img src={src} alt="Evidence" style={{
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+              borderRadius: '4px',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.5)'
+            }} />
+          </div>
+        </div>
+
+        {/* Right Side: High-Tech Detail Panel (320px) */}
+        <div style={{
+          width: '320px',
+          background: 'rgba(255, 255, 255, 0.015)',
+          borderLeft: '1px solid var(--border)',
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '24px',
+          gap: '24px',
+          boxSizing: 'border-box'
+        }}>
+          {/* Header Action */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '10px', color: 'var(--t3)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              Infraction Report
+            </span>
+            <button className="icon-btn" onClick={onClose} style={{ fontSize: '16px', color: 'var(--t3)', padding: '4px' }}>✕</button>
+          </div>
+
+          {/* Infraction Category Info */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{
+              alignSelf: 'flex-start',
+              background: isPedestrian ? 'rgba(59, 130, 246, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+              color: isPedestrian ? '#60a5fa' : '#f87171',
+              border: `1px solid ${isPedestrian ? 'rgba(59, 130, 246, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+              borderRadius: '4px',
+              padding: '4px 10px',
+              fontSize: '9px',
+              fontWeight: '800',
+              textTransform: 'uppercase',
+              letterSpacing: '0.75px'
+            }}>
+              {cleanEventType}
+            </div>
+            <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--t1)' }}>
+              {cameraName || 'Unknown Camera'}
+            </div>
+          </div>
+
+          {/* License Plate Section */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <span style={{ fontSize: '9px', color: 'var(--t3)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Identified Plate
+            </span>
+            {licensePlate ? (
+              <SaudiPlate licensePlate={licensePlate} plateAr={plateAr} />
+            ) : (
               <div style={{
-                background: '#fff',
-                color: '#000',
-                borderRadius: '3px',
-                padding: '3px 6px',
-                fontFamily: "'Courier New', monospace",
-                fontWeight: '700',
-                fontSize: '9px',
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px dashed rgba(255, 255, 255, 0.15)',
+                borderRadius: '6px',
+                padding: '16px',
                 textAlign: 'center',
-                display: 'inline-block',
-                lineHeight: '1.1',
-                border: '1px solid #ccc',
-                marginLeft: '12px'
+                color: 'var(--t3)',
+                fontSize: '10px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '6px'
               }}>
-                {plateAr && (
-                  <div style={{
-                    borderBottom: '1px solid #bbb',
-                    fontSize: '8px',
-                    marginBottom: '1px',
-                    color: '#222',
-                    direction: 'rtl'
-                  }}>
-                    {plateAr}
-                  </div>
-                )}
-                <div style={{ letterSpacing: '1px' }}>
-                  {licensePlate}
-                </div>
+                <i className="fa-solid fa-eye-slash" style={{ fontSize: '16px', opacity: 0.6 }} />
+                <span>Plate text is not clear</span>
               </div>
             )}
           </div>
-          <button className="icon-btn" onClick={onClose} style={{ fontSize: '15px', color: 'var(--t3)', background: 'transparent', border: 'none', cursor: 'pointer' }}>✕</button>
+
+          {/* Metadata Grid */}
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            background: 'var(--bg)',
+            border: '1px solid var(--border2)',
+            borderRadius: '6px',
+            padding: '14px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
+              <span style={{ color: 'var(--t3)' }}>Timestamp</span>
+              <span style={{ color: 'var(--t1)', fontWeight: '600', fontFamily: 'monospace' }}>{timestamp || '--'}</span>
+            </div>
+            {crossedLineIdx !== undefined && crossedLineIdx !== null && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
+                <span style={{ color: 'var(--t3)' }}>Infraction Line</span>
+                <span style={{ color: '#ef4444', fontWeight: '800' }}>Line {crossedLineIdx + 1}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Action Row */}
+          <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <button
+              onClick={onClose}
+              className="btn-accent"
+              style={{
+                width: '100%',
+                padding: '8px',
+                fontSize: '10px',
+                fontWeight: '700',
+                justifyContent: 'center',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              Dismiss Preview
+            </button>
+          </div>
         </div>
-        <div className="modal-body" style={{ padding: '0', display: 'flex', justifyContent: 'center', background: '#000' }}>
-          <img src={src} alt="Evidence" style={{ maxWidth: '100%', maxHeight: '72vh', objectFit: 'contain', display: 'block' }} />
-        </div>
+
       </div>
     </div>
   )

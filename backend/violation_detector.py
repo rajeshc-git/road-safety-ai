@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 from typing import Tuple, Optional
 
+# pyrefly: ignore [missing-import]
 import cv2 as cv
 
 from config import SNAPSHOTS_DIR
@@ -27,14 +28,20 @@ def _save_violation_images(snap_path: Optional[str], frame, crop_path: Optional[
 _ocr_reader = None
 
 def get_ocr_reader():
-    """Lazy initializer for EasyOCR reader to save startup memory/time."""
+    """Lazy initializer for PaddleOCR reader to save startup memory/time."""
     global _ocr_reader
     if _ocr_reader is None:
-        import easyocr
+        import os
+        # Disable oneDNN to avoid instruction execution path bugs on CPU
+        os.environ["FLAGS_use_onednn"] = "0"
+        os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+        
+        # Import torch first on Windows to avoid DLL load order conflicts
+        # pyrefly: ignore [missing-import]
         import torch
-        gpu = torch.cuda.is_available()
-        # Initializing for English only. verbose=False stops it flooding the console logs.
-        _ocr_reader = easyocr.Reader(['en'], gpu=gpu, verbose=False)
+        # pyrefly: ignore [missing-import]
+        from paddleocr import PaddleOCR
+        _ocr_reader = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
     return _ocr_reader
 
 
@@ -60,13 +67,10 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
         if lower_portion.size == 0:
             return None, None
 
-        # Convert to grayscale to simplify features and improve OCR accuracy
-        gray = cv.cvtColor(lower_portion, cv.COLOR_BGR2GRAY)
-
         reader = get_ocr_reader()
-        results = reader.readtext(gray, detail=1)
+        results = reader.ocr(lower_portion, cls=False)
 
-        if not results:
+        if not results or not results[0]:
             return None, None
 
         # Filter strictly for standard ASCII letters and numbers (no Arabic or math symbols)
@@ -81,39 +85,81 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
             import re
             return re.sub(r'\s+', ' ', "".join(cleaned)).strip()
 
-        english_texts = []
-        for bbox, text, conf in results:
+        # Evaluate each detected text line individually to prevent grille decals
+        # (e.g. model names, dealer text) from contaminating the plate text.
+        candidates = []
+        for line in results[0]:
+            text = line[1][0]
+            conf = line[1][1]
             if conf < 0.25:
                 continue
             cleaned = clean_to_ascii_alnum(text)
-            if cleaned:
-                english_texts.append(cleaned)
+            if not cleaned:
+                continue
+                
+            # Apply strict license plate validation heuristics on the individual segment:
+            # 1. Plate must contain at least one digit (to exclude pure text decals like brand names 'ISUZU')
+            # 2. Length must be between 3 and 12 characters
+            # 3. Must not be a known vehicle brand name
+            has_digit = any(c.isdigit() for c in cleaned)
+            is_valid_len = 3 <= len(cleaned) <= 12
+            is_brand = cleaned in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
+            
+            if has_digit and is_valid_len and not is_brand:
+                candidates.append((cleaned, conf, line[0]))
 
-        final_en = " ".join(english_texts).strip()
+        final_en = None
+        coords = None
+        if candidates:
+            # Select the candidate with the highest confidence
+            best_candidate = max(candidates, key=lambda x: x[1])
+            final_en = best_candidate[0]
+            pts = best_candidate[2]
+            
+            # Map coords to vehicle_crop
+            xs = [pt[0] for pt in pts]
+            ys = [pt[1] for pt in pts]
+            bx1, by1 = min(xs), min(ys)
+            bx2, by2 = max(xs), max(ys)
+            
+            px1 = int(x_start + bx1)
+            py1 = int(y_start + by1)
+            px2 = int(x_start + bx2)
+            py2 = int(y_start + by2)
+            coords = (px1, py1, px2, py2)
+        else:
+            # Fallback to previous behavior (highest confidence line) if no line passed validation
+            best_line = max(results[0], key=lambda x: x[1][1])
+            final_en = clean_to_ascii_alnum(best_line[1][0])
+            
+            # Final validation check on fallback
+            has_digit = any(c.isdigit() for c in final_en)
+            is_valid_len = 3 <= len(final_en) <= 12
+            is_brand = final_en in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
+            if not has_digit or not is_valid_len or is_brand:
+                final_en = None
+            else:
+                pts = best_line[0]
+                xs = [pt[0] for pt in pts]
+                ys = [pt[1] for pt in pts]
+                bx1, by1 = min(xs), min(ys)
+                bx2, by2 = max(xs), max(ys)
+                px1 = int(x_start + bx1)
+                py1 = int(y_start + by1)
+                px2 = int(x_start + bx2)
+                py2 = int(y_start + by2)
+                coords = (px1, py1, px2, py2)
 
-        # Fallback to highest confidence result if nothing joined
-        if not final_en and results:
-            best_text = max(results, key=lambda x: x[2])[1]
-            final_en = clean_to_ascii_alnum(best_text)
+        if final_en:
+            print(f"  [OCR] Detected plate — EN: '{final_en}'")
+        else:
+            print("  [OCR] No valid license plate detected (failed plate verification)")
 
-        # Apply strict license plate validation heuristics:
-        # 1. Plate must contain at least one digit (to exclude pure text decals like brand names 'ISUZU')
-        # 2. Length must be between 3 and 12 characters
-        # 3. Must not be a known vehicle brand name
-        has_digit = any(c.isdigit() for c in final_en)
-        is_valid_len = 3 <= len(final_en) <= 12
-        is_brand = final_en in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
-
-        if not final_en or not has_digit or not is_valid_len or is_brand:
-            print(f"  [OCR] Rejected candidate '{final_en}' (failed plate verification)")
-            final_en = None
-
-        print(f"  [OCR] Detected plate — EN: '{final_en}'")
-        return None, final_en
+        return None, final_en, coords
 
     except Exception as e:
         print(f"  [OCR] Error extracting license plate: {e}")
-        return None, None
+        return None, None, None
 
 
 async def handle_violation(
@@ -176,14 +222,33 @@ async def handle_violation(
                 crop_filename = f"crop_cam{camera_id}_vid{vehicle_id}_{ts_str}.jpg"
             crop_path = str(SNAPSHOTS_DIR / crop_filename)
 
+        # Perform license plate extraction (OCR) BEFORE saving the images
+        plate_ar = None
+        plate_en = None
+        if not is_dms and crop is not None and crop.size > 0:
+            # pyrefly: ignore [bad-unpacking]
+            plate_ar, plate_en, plate_coords = await asyncio.to_thread(_extract_license_plate, crop)
+
+            # Draw the license plate overlay on both crop and full frame if detected
+            if plate_en and plate_coords:
+                px1, py1, px2, py2 = plate_coords
+                
+                # Draw on vehicle crop
+                cv.rectangle(crop, (px1, py1), (px2, py2), (0, 220, 60), 3)
+                cv.rectangle(crop, (px1, py1 - 22), (px1 + len(plate_en) * 11 + 10, py1), (0, 220, 60), cv.FILLED)
+                cv.putText(crop, plate_en, (px1 + 5, py1 - 6), cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
+                
+                # Draw on full frame (map coords using vehicle box start coordinates)
+                fx1 = x1c + px1
+                fy1 = y1c + py1
+                fx2 = x1c + px2
+                fy2 = y1c + py2
+                cv.rectangle(frame, (fx1, fy1), (fx2, fy2), (0, 220, 60), 3)
+                cv.rectangle(frame, (fx1, fy1 - 25), (fx1 + len(plate_en) * 14 + 10, fy1), (0, 220, 60), cv.FILLED)
+                cv.putText(frame, plate_en, (fx1 + 5, fy1 - 8), cv.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv.LINE_AA)
+
         # Offload file writing and image compression to a background thread pool so it does not block the FastAPI main event loop!
         await asyncio.to_thread(_save_violation_images, snap_path, frame, crop_path, crop, quality)
-
-    # Perform license plate extraction (OCR) asynchronously in a background thread if it's a traffic event
-    plate_ar = None
-    plate_en = None
-    if not is_dms and save_enabled and crop is not None and crop.size > 0:
-        plate_ar, plate_en = await asyncio.to_thread(_extract_license_plate, crop)
 
 
 

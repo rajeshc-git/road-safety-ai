@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+# pyrefly: ignore [missing-import]
 import aiosqlite
 
 from config import DB_PATH
@@ -53,6 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_events_status  ON events(status);
 
 DEFAULT_SETTINGS = {
     "speed_threshold": "0.1",
+    "stop_duration": "0.6",
     "detection_confidence": "0.5",
     "processing_fps": "25",
     "snapshot_quality": "high",

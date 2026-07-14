@@ -11,5 +11,6 @@ aiosqlite>=0.20.0
 psutil>=5.9.0
 python-multipart>=0.0.9
 mediapipe>=0.10.11
-easyocr>=1.7.1
+paddleocr>=2.7.3
+paddlepaddle>=2.6.2
 

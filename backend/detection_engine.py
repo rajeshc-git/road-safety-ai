@@ -72,8 +72,8 @@ class TrackHistory:
     - This is robust against tracker jitter (bounding boxes wobble 2-5px even
       for parked cars).
     """
-    STOP_DISPLACEMENT_PX = 8.0    # max px movement per frame to count as "still"
-    STOP_CONFIRM_FRAMES  = 6      # consecutive still-frames needed to confirm stop
+    STOP_DISPLACEMENT_PX = 10.0   # max px movement per inference update to count as "still" (covers tracker jitter ~2-5px)
+    STOP_CONFIRM_FRAMES  = 5      # consecutive still inference-updates needed to confirm stop (5 × 3 frames ≈ 15 real frames ≈ 0.6s at 25fps)
 
     def __init__(self, maxlen: int = 30):
         self.positions: deque = deque(maxlen=maxlen)
@@ -84,13 +84,17 @@ class TrackHistory:
 
         # Zone-aware stop compliance state
         self.in_zone: bool = False
+        self.in_zone_idx: int = -1            # which zone the vehicle is currently inside
         self.has_stopped: bool = False
+        self.zones_stopped: set = set()       # set of zone indices where vehicle confirmed a stop
         self.consecutive_still_frames: int = 0
+        self._position_fresh: bool = False     # True only when update() recorded a genuinely new position
 
     def update(self, cx: float, cy: float):
         self.positions.append((cx, cy))
         self.timestamps.append(time.time())
         self.frame_count += 1
+        self._position_fresh = True  # Mark that a genuinely new position was recorded
 
     def frame_displacement(self) -> float:
         """Pixel displacement between the last two recorded positions."""
@@ -476,8 +480,8 @@ class CameraStream:
                                 cv.putText(annotated, "Person", (x1, y1 - 6),
                                            cv.FONT_HERSHEY_SIMPLEX, text_scale, (255, 120, 0), thickness)
 
-                        # Restrict violation checking to active inference frames only
-                        if len(self.stop_zones) > 0 and veh_dets.tracker_id is not None and is_inference_frame:
+                        # Check violations on every frame (not just inference frames) so zone enter/exit is never missed
+                        if len(self.stop_zones) > 0 and veh_dets.tracker_id is not None:
                             self._check_violations(frame, annotated, veh_dets, ped_dets)
                 except Exception as e:
                     import traceback
@@ -541,6 +545,12 @@ class CameraStream:
         if not all_zones:
             return
 
+        # Read stop duration from UI settings (default 0.6s) and convert to inference-frame count
+        # At ~8 inference updates/sec (24fps ÷ 3), 0.6s ≈ 5 inference frames
+        stop_duration_sec = float(get_runtime_settings().get("stop_duration", "0.6"))
+        inferences_per_sec = max(1, self.target_fps / 3.0)
+        stop_confirm_frames = max(2, round(stop_duration_sec * inferences_per_sec))
+
         # Pedestrian zone checks
         ped_near_any_line = False
         if len(ped_dets) > 0:
@@ -584,28 +594,35 @@ class CameraStream:
                     currently_in_any_zone = True
 
                     # ── INSIDE THE ZONE: monitor displacement ──
-                    if not hist.in_zone:
-                        # Vehicle just ENTERED the zone this frame
+                    if not hist.in_zone or hist.in_zone_idx != zone_idx:
+                        # Vehicle just ENTERED this zone (or switched zones)
                         hist.in_zone = True
+                        hist.in_zone_idx = zone_idx
                         hist.has_stopped = False
+                        hist.violation_reported = False   # Reset so this zone can be evaluated fresh
                         hist.consecutive_still_frames = 0
 
-                    # Check frame-to-frame displacement
-                    disp = hist.frame_displacement()
-                    if disp < TrackHistory.STOP_DISPLACEMENT_PX:
-                        hist.consecutive_still_frames += 1
-                    else:
-                        hist.consecutive_still_frames = 0
+                    # Check frame-to-frame displacement — ONLY on frames with fresh position data
+                    # (On cached/non-inference frames, displacement is artificially 0 since the bbox is reused)
+                    if hist._position_fresh:
+                        hist._position_fresh = False
+                        disp = hist.frame_displacement()
+                        if disp < TrackHistory.STOP_DISPLACEMENT_PX:
+                            hist.consecutive_still_frames += 1
+                        else:
+                            hist.consecutive_still_frames = 0
 
                     # If the car stayed still long enough → it stopped
-                    if hist.consecutive_still_frames >= TrackHistory.STOP_CONFIRM_FRAMES:
+                    if hist.consecutive_still_frames >= stop_confirm_frames:
                         hist.has_stopped = True
+                        hist.zones_stopped.add(zone_idx)
 
-                elif hist.in_zone and not in_zone:
-                    # ── Vehicle just EXITED this zone ──
+                elif hist.in_zone and hist.in_zone_idx == zone_idx and not in_zone:
+                    # ── Vehicle just EXITED this specific zone ──
                     hist.in_zone = False
+                    hist.in_zone_idx = -1
 
-                    if not hist.has_stopped:
+                    if zone_idx not in hist.zones_stopped:
                         # Car drove through the zone without stopping → VIOLATION
                         if (hist.frame_count >= MIN_TRACKED_FRAMES
                                 and not hist.violation_reported
@@ -623,14 +640,15 @@ class CameraStream:
                                 tuple(map(int, box)), ped_near_any_line,
                                 "Did Not Stop", zone_idx,
                             )
-                    # Reset for potential re-entry into another zone
+                    # Reset displacement counter (do NOT break — continue checking other zones)
                     hist.consecutive_still_frames = 0
-                    break
 
             # If the vehicle is not in any zone anymore, make sure in_zone is cleared
             if not currently_in_any_zone and hist.in_zone:
+                prev_zone_idx = hist.in_zone_idx
                 hist.in_zone = False
-                if not hist.has_stopped:
+                hist.in_zone_idx = -1
+                if prev_zone_idx not in hist.zones_stopped:
                     if (hist.frame_count >= MIN_TRACKED_FRAMES
                             and not hist.violation_reported
                             and (now - hist.last_violation_time >= VIOLATION_COOLDOWN_SEC)):
@@ -645,7 +663,7 @@ class CameraStream:
                             self.camera_id, self.camera_name,
                             int(tid), raw_frame.copy(),
                             tuple(map(int, box)), ped_near_any_line,
-                            "Did Not Stop", 0,
+                            "Did Not Stop", max(0, prev_zone_idx),
                         )
                 hist.consecutive_still_frames = 0
 
