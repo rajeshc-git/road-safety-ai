@@ -4,15 +4,22 @@ Auto-detects connected cameras, manages their lifecycle, and dispatches frames.
 """
 
 import asyncio
+import os
 import json
 import threading
 import time
 from typing import Dict, Optional, Set, Callable, Any
 
 import cv2 as cv
+try:
+    cv.utils.logging.setLogLevel(cv.utils.logging.LOG_LEVEL_SILENT)
+except Exception:
+    pass
 
 from detection_engine import CameraStream
 import database as db
+import redis_service
+import webrtc_service
 
 
 class CameraManager:
@@ -27,6 +34,7 @@ class CameraManager:
         self._ws_subscribers: Dict[int, Set[Any]] = {}  # camera_id → set of WebSocket connections
         self._mjpeg_viewers: Dict[int, int] = {}       # camera_id → active MJPEG stream viewer count
         self._lock = threading.Lock()
+        webrtc_service.set_camera_manager_ref(self)
 
     # ── MJPEG Stream Viewer Tracking ──────────────────────────────────────────
     def increment_mjpeg_viewers(self, camera_id: int):
@@ -64,6 +72,9 @@ class CameraManager:
             "camera_id": camera_id,
             "meta": meta
         })
+        # Publish to Redis Pub/Sub for distributed / multi-instance consumers
+        await redis_service.publish_camera_telemetry(camera_id, meta)
+
         dead = set()
         for ws in list(self._ws_subscribers.get(camera_id, set())):
             try:
@@ -172,14 +183,24 @@ class CameraManager:
         if cam:
             await self._start_stream(cam)
 
+    async def switch_active_stream(self, cam_id: int):
+        """Stops all other camera streams and starts only the requested camera stream to focus CPU on current feed."""
+        with self._lock:
+            other_ids = [cid for cid in list(self._streams.keys()) if cid != cam_id]
+        for old_id in other_ids:
+            await self.stop_detection(old_id)
+        await self.start_detection(cam_id)
+
     async def stop_detection(self, cam_id: int):
         with self._lock:
-            stream = self._streams.get(cam_id)
+            stream = self._streams.pop(cam_id, None)
             if stream:
                 stream.stop()
-                # We can either keep reference or remove it. Better to remove it to kill loop fully.
-                del self._streams[cam_id]
         await db.update_camera_status(cam_id, "offline")
+        try:
+            await webrtc_service.close_camera_webrtc_connections(cam_id)
+        except Exception:
+            pass
 
 
     async def update_config(self, cam_id: int, config: dict):
@@ -194,38 +215,47 @@ class CameraManager:
     async def get_status(self, cam_id: int) -> dict:
         stream = self._streams.get(cam_id)
         if not stream:
-            return {"running": False, "fps": 0, "frame_size": [0, 0]}
-        return {
-            "running": stream.is_running,
-            "fps": round(stream.fps_actual, 1),
-            "frame_size": list(stream.frame_size),
-            "detection": stream.detection_on,
-        }
+            status = {"running": False, "fps": 0, "frame_size": [0, 0]}
+        else:
+            status = {
+                "running": stream.is_running,
+                "fps": round(stream.fps_actual, 1),
+                "frame_size": list(stream.frame_size),
+                "detection": stream.detection_on,
+            }
+        await redis_service.cache_camera_status(cam_id, status)
+        return status
 
     # ── Auto-detect webcams ───────────────────────────────────────────────────
     async def auto_detect_cameras(self) -> list:
-        """Check webcam indices 0-5 and add any that open successfully."""
+        """Check connected webcams safely without noisy backend logging."""
         existing = await db.get_all_cameras()
         existing_sources = {str(c["source"]) for c in existing}
         found = []
-        for idx in range(6):
+        backend = cv.CAP_DSHOW if os.name == "nt" else cv.CAP_ANY
+        for idx in range(3):
             if str(idx) in existing_sources:
                 continue
-            cap = cv.VideoCapture(idx)
-            if cap.isOpened():
-                cap.release()
-                cam_data = {
-                    "name": f"Camera {idx}",
-                    "source": str(idx),
-                    "cam_type": "webcam",
-                    "status": "offline",
-                    "config": {},
-                }
-                # Add newly detected webcam to DB, but keep it offline and DO NOT start its stream thread on boot!
-                cam_id = await db.upsert_camera(cam_data)
-                cam_data["id"] = cam_id
-                result = await db.get_camera(cam_id)
-                found.append(result)
+            try:
+                cap = cv.VideoCapture(idx, backend)
+                if cap.isOpened():
+                    cap.release()
+                    cam_data = {
+                        "name": f"Camera {idx}",
+                        "source": str(idx),
+                        "cam_type": "webcam",
+                        "status": "offline",
+                        "config": {},
+                    }
+                    cam_id = await db.upsert_camera(cam_data)
+                    cam_data["id"] = cam_id
+                    result = await db.get_camera(cam_id)
+                    found.append(result)
+                else:
+                    if idx >= 1 and not found:
+                        break
+            except Exception:
+                pass
         return found
 
     async def load_existing_cameras(self):

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { streamUrl, snapshotUrl, api } from '../api'
+import { streamUrl, snapshotUrl, api, startWebRTCStream } from '../api'
 import './Dashboard.css'
 import './Pages.css'
+import SkeuomorphicPlayer, { PLAYER_SKINS } from '../components/SkeuomorphicPlayer'
 
 /* ─────────────────────────── AUDIO ALARM SYNTHESIZER ─────────────────────────── */
 function playDmsBeep(alertType, beeperType = 'default') {
@@ -614,16 +615,12 @@ function EventsTable({ cameras, onNavigate, onImageClick, eventTrigger }) {
 
 const STOP_LINE_COLORS = ['#ef4444', '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899']
 
-/* ─────────────────────────── CAMERA CONFIG ─────────────────────────── */
-function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, streamKey, onSaveSettings, lines: zones, setLines: setZones }) {
-  const canvasRef = useRef(null)
+/* ─────────────────────────── CAMERA CONFIG (REIMAGINED PRO HUB) ─────────────────────────── */
+function CameraConfig({ activeCam, onStart, onStop, streamLoading, onSaveConfig, settings, streamKey, onSaveSettings, lines: zones, setLines: setZones, isDrawingZone, setIsDrawingZone }) {
   const [lineName, setLineName] = useState('Main Gate Stop Line')
   const [previewPlaying, setPreviewPlaying] = useState(false)
   const previewCtxRef = useRef(null)
   const previewTimerRef = useRef(null)
-  // Corner handle dragging state
-  const dragRef = useRef(null) // { zoneIdx, pointIdx }
-  const [canvasCursor, setCanvasCursor] = useState('default')
 
   let vidW = 1920, vidH = 1080
   if (activeCam?.resolution) {
@@ -632,20 +629,6 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
       vidW = parseInt(parts[0]) || 1920
       vidH = parseInt(parts[1]) || 1080
     }
-  }
-
-  const findEndpoint = (p) => {
-    const cv = canvasRef.current
-    const hitRadius = 22 * (cv ? (cv.width / 800) : 1)
-    for (let i = 0; i < zones.length; i++) {
-      const zone = zones[i]
-      for (let j = 0; j < zone.length; j++) {
-        const pt = zone[j]
-        const d = Math.hypot(p.x - pt.x, p.y - pt.y)
-        if (d <= hitRadius) return { zoneIdx: i, pointIdx: j }
-      }
-    }
-    return null
   }
 
   const stopPreview = useCallback(() => {
@@ -674,19 +657,12 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
     setPreviewPlaying(true)
 
     let durationSec = 1.0
-    if (beeperType === 'high_intensity') {
-      durationSec = 2.4
-    } else if (beeperType === 'truck_horn') {
-      durationSec = 1.2
-    } else if (beeperType === 'pulsing_siren') {
-      durationSec = 1.5
-    } else if (beeperType === 'nuclear_meltdown') {
-      durationSec = 3.0
-    } else if (beeperType === 'klaxon') {
-      durationSec = 1.3
-    } else {
-      durationSec = 1.7
-    }
+    if (beeperType === 'high_intensity') durationSec = 2.4
+    else if (beeperType === 'truck_horn') durationSec = 1.2
+    else if (beeperType === 'pulsing_siren') durationSec = 1.5
+    else if (beeperType === 'nuclear_meltdown') durationSec = 3.0
+    else if (beeperType === 'klaxon') durationSec = 1.3
+    else durationSec = 1.7
 
     previewTimerRef.current = setTimeout(() => {
       setPreviewPlaying(false)
@@ -696,11 +672,8 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
   }, [settings?.dms_beeper_type, stopPreview])
 
   const handleTogglePreview = () => {
-    if (previewPlaying) {
-      stopPreview()
-    } else {
-      startPreview()
-    }
+    if (previewPlaying) stopPreview()
+    else startPreview()
   }
 
   useEffect(() => {
@@ -710,13 +683,9 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
   useEffect(() => {
     return () => {
       if (previewCtxRef.current) {
-        try {
-          previewCtxRef.current.close()
-        } catch (e) {}
+        try { previewCtxRef.current.close() } catch (e) {}
       }
-      if (previewTimerRef.current) {
-        clearTimeout(previewTimerRef.current)
-      }
+      if (previewTimerRef.current) clearTimeout(previewTimerRef.current)
     }
   }, [])
 
@@ -724,7 +693,7 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
   const isDms = camConfig.mode === 'driver'
 
   const scaleAndSave = useCallback((allZones) => {
-    if (!activeCam) return
+    if (!activeCam || !onSaveConfig) return
     onSaveConfig({
       stop_zones: allZones,
       stop_zone: allZones.length > 0 ? allZones[0] : null,
@@ -732,189 +701,29 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
     })
   }, [activeCam, onSaveConfig, lineName])
 
-  const draw = useCallback(() => {
-    if (isDms) return
-    const cv = canvasRef.current; if (!cv) return
-    const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, cv.width, cv.height)
-    const scale = cv.width / 800
-    
-    zones.forEach((zone, idx) => {
-      const color = STOP_LINE_COLORS[idx % STOP_LINE_COLORS.length]
-      
-      // 1. Draw the translucent filled polygon
-      ctx.fillStyle = color + '26' // 15% opacity hex
-      ctx.beginPath()
-      ctx.moveTo(zone[0].x, zone[0].y)
-      for (let i = 1; i < zone.length; i++) {
-        ctx.lineTo(zone[i].x, zone[i].y)
-      }
-      ctx.closePath()
-      ctx.fill()
-      
-      // 2. Draw boundaries
-      // Red dashed line for the Exit Line (P1 -> P2)
-      ctx.strokeStyle = '#ef4444' // Red
-      ctx.lineWidth = 4 * scale
-      ctx.setLineDash([12 * scale, 6 * scale])
-      ctx.beginPath()
-      ctx.moveTo(zone[0].x, zone[0].y)
-      ctx.lineTo(zone[1].x, zone[1].y)
-      ctx.stroke()
-      ctx.setLineDash([])
-      
-      // Softer solid lines for other boundaries
-      ctx.strokeStyle = color
-      ctx.lineWidth = 2 * scale
-      ctx.beginPath()
-      ctx.moveTo(zone[1].x, zone[1].y)
-      ctx.lineTo(zone[2].x, zone[2].y)
-      ctx.lineTo(zone[3].x, zone[3].y)
-      ctx.lineTo(zone[0].x, zone[0].y)
-      ctx.stroke()
-      
-      // 3. Draw corner handles (nodes)
-      zone.forEach((pt, pIdx) => {
-        ctx.beginPath()
-        ctx.arc(pt.x, pt.y, 8 * scale, 0, Math.PI * 2)
-        ctx.fillStyle = '#ffffff'
-        ctx.fill()
-        ctx.strokeStyle = color
-        ctx.lineWidth = 2 * scale
-        ctx.stroke()
-        
-        ctx.fillStyle = pIdx < 2 ? '#ef4444' : '#10b981'
-        ctx.font = `bold ${10 * scale}px sans-serif`
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText((pIdx + 1).toString(), pt.x, pt.y)
-      })
-    })
-  }, [zones, isDms])
-
-  useEffect(() => { if (!isDms) draw() }, [draw, isDms])
-
-  const pt = (e) => {
-    const cv = canvasRef.current; const r = cv.getBoundingClientRect()
-    return { x: Math.round((e.clientX - r.left) * (cv.width / r.width)), y: Math.round((e.clientY - r.top) * (cv.height / r.height)) }
+  const handleAdd3DZone = () => {
+    const offset = (zones.length % 5) * 35
+    const newZone = [
+      { x: Math.round(vidW * 0.35) + offset, y: Math.round(vidH * 0.52) + offset }, // P1: exit line left
+      { x: Math.round(vidW * 0.65) + offset, y: Math.round(vidH * 0.52) + offset }, // P2: exit line right
+      { x: Math.round(vidW * 0.78) + offset, y: Math.round(vidH * 0.84) + offset }, // P3: entrance right
+      { x: Math.round(vidW * 0.22) + offset, y: Math.round(vidH * 0.84) + offset }  // P4: entrance left
+    ]
+    const updated = [...zones, newZone]
+    setZones(updated)
+    scaleAndSave(updated)
   }
 
-  const onMD = (e) => {
-    if (isDms) return
-    e.preventDefault()
-    const p = pt(e)
-    const hit = findEndpoint(p)
-    if (hit) {
-      dragRef.current = hit // { zoneIdx, pointIdx }
-    }
-  }
-
-  const onMM = (e) => {
-    if (isDms) return
-    const p = pt(e)
-    const cv = canvasRef.current; if (!cv) return
-    const ctx = cv.getContext('2d')
-    const scale = cv.width / 800
-
-    if (dragRef.current) {
-      const { zoneIdx, pointIdx } = dragRef.current
-      const updated = zones.map((z, zIdx) => {
-        if (zIdx !== zoneIdx) return z
-        return z.map((pt, pIdx) => 
-          pIdx === pointIdx ? { x: p.x, y: p.y } : pt
-        )
-      })
-      
-      // Live redraw with updated position
-      ctx.clearRect(0, 0, cv.width, cv.height)
-      updated.forEach((zone, idx) => {
-        const color = STOP_LINE_COLORS[idx % STOP_LINE_COLORS.length]
-        
-        // Translucent fill
-        ctx.fillStyle = color + '26'
-        ctx.beginPath()
-        ctx.moveTo(zone[0].x, zone[0].y)
-        for (let i = 1; i < zone.length; i++) {
-          ctx.lineTo(zone[i].x, zone[i].y)
-        }
-        ctx.closePath()
-        ctx.fill()
-        
-        // Red dashed line for exit
-        ctx.strokeStyle = '#ef4444'
-        ctx.lineWidth = 4 * scale
-        ctx.setLineDash([12 * scale, 6 * scale])
-        ctx.beginPath()
-        ctx.moveTo(zone[0].x, zone[0].y)
-        ctx.lineTo(zone[1].x, zone[1].y)
-        ctx.stroke()
-        ctx.setLineDash([])
-        
-        // Softer solid boundaries
-        ctx.strokeStyle = color
-        ctx.lineWidth = 2 * scale
-        ctx.beginPath()
-        ctx.moveTo(zone[1].x, zone[1].y)
-        ctx.lineTo(zone[2].x, zone[2].y)
-        ctx.lineTo(zone[3].x, zone[3].y)
-        ctx.lineTo(zone[0].x, zone[0].y)
-        ctx.stroke()
-        
-        const isDraggingZone = idx === zoneIdx
-        zone.forEach((pt, pIdx) => {
-          const isDraggingPoint = isDraggingZone && pIdx === pointIdx
-          ctx.beginPath()
-          ctx.arc(pt.x, pt.y, isDraggingPoint ? 11 * scale : 8 * scale, 0, Math.PI * 2)
-          ctx.fillStyle = isDraggingPoint ? color : '#ffffff'
-          ctx.fill()
-          ctx.strokeStyle = color
-          ctx.lineWidth = 2 * scale
-          ctx.stroke()
-          
-          ctx.fillStyle = isDraggingPoint ? '#ffffff' : (pIdx < 2 ? '#ef4444' : '#10b981')
-          ctx.font = `bold ${10 * scale}px sans-serif`
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'middle'
-          ctx.fillText((pIdx + 1).toString(), pt.x, pt.y)
-        })
-      })
-      return
-    }
-
-    const hit = findEndpoint(p)
-    setCanvasCursor(hit ? 'grab' : 'default')
-  }
-
-  const onMU = (e) => {
-    if (isDms) return
-    const p = pt(e)
-
-    if (dragRef.current) {
-      const { zoneIdx, pointIdx } = dragRef.current
-      const updated = zones.map((z, zIdx) => {
-        if (zIdx !== zoneIdx) return z
-        return z.map((pt, pIdx) => 
-          pIdx === pointIdx ? { x: p.x, y: p.y } : pt
-        )
-      })
-      setZones(updated)
-      dragRef.current = null
-      scaleAndSave(updated)
-    }
-  }
-
-  const deleteLine = (idx) => {
+  const deleteZone = (idx) => {
     const updated = zones.filter((_, i) => i !== idx)
     setZones(updated)
     scaleAndSave(updated)
   }
 
   const clearAll = async () => {
+    if (zones.length === 0) return
+    if (!confirm('Clear all safety stop zones for this camera?')) return
     setZones([])
-    const cv = canvasRef.current
-    if (cv) {
-      const ctx = cv.getContext('2d')
-      ctx.clearRect(0, 0, cv.width, cv.height)
-    }
     if (activeCam) {
       await onSaveConfig({ stop_zones: [], stop_zone: null, stop_line_name: '' })
     }
@@ -923,387 +732,232 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
   const handleToggleMode = async () => {
     if (!activeCam) return
     const targetMode = isDms ? 'traffic' : 'driver'
-    if (confirm(`Switch this camera to ${targetMode === 'driver' ? 'Driver Monitoring (DMS)' : 'Traffic Stop-Line Compliance'} mode?`)) {
+    if (confirm(`Switch this camera to ${targetMode === 'driver' ? 'Driver Monitoring (DMS Cabin Vision)' : 'Traffic Stop-Line Compliance'} mode?`)) {
       await onSaveConfig({ mode: targetMode })
+    }
+  }
+
+  const handleStartDrawOnFeed = () => {
+    if (setIsDrawingZone) {
+      setIsDrawingZone(true)
+      const feedEl = document.querySelector('.live-card')
+      if (feedEl) feedEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }
 
   const cam = activeCam
 
   return (
-    <div className="card cfg-card" style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '12px', background: 'var(--panel)', border: '1px solid var(--border)' }}>
-      <div style={{ fontSize: '12px', fontWeight: '700', color: 'var(--t1)', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>Camera Calibration — {cam?.name || '--'}</span>
-        <span style={{
-          fontSize: '9px',
-          fontWeight: '700',
-          padding: '3px 9px',
-          borderRadius: '12px',
-          background: isDms ? 'rgba(235, 120, 10, 0.12)' : 'rgba(37, 99, 235, 0.12)',
-          color: isDms ? '#ff9d43' : '#3b82f6',
-          border: `1px solid ${isDms ? 'rgba(235,120,10,0.25)' : 'rgba(37,99,235,0.25)'}`
-        }}>
-          {isDms ? 'Cabin Mode (DMS)' : 'Compliance Mode'}
-        </span>
+    <div className="card cfg-pro-card">
+      {/* HEADER WITH PRO SEGMENTED SWITCHER (LIGHT + DARK THEME) */}
+      <div className="cfg-pro-header">
+        <div className="cfg-pro-title-wrap">
+          <i className={`fa-solid ${isDms ? 'fa-user-shield' : 'fa-crosshairs'}`} style={{ color: isDms ? '#ea580c' : '#2563eb', fontSize: 13 }} />
+          <span className="cfg-pro-title">Configuration — {cam?.name || 'No Camera'}</span>
+        </div>
+
+        {/* Pro Mode Segmented Switcher */}
+        <div className="pro-mode-toggle" title="Switch camera analysis mode">
+          <button
+            type="button"
+            className={`pro-mode-btn ${!isDms ? 'active traffic' : ''}`}
+            onClick={() => !isDms ? null : handleToggleMode()}
+          >
+            <i className="fa-solid fa-road" />
+            <div className="pro-mode-label">
+              <span className="pro-mode-title">Traffic Stop-Line</span>
+              <span className="pro-mode-sub">Road Perspective ROI</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            className={`pro-mode-btn ${isDms ? 'active dms' : ''}`}
+            onClick={() => isDms ? null : handleToggleMode()}
+          >
+            <i className="fa-solid fa-user-shield" />
+            <div className="pro-mode-label">
+              <span className="pro-mode-title">DMS Cabin Vision</span>
+              <span className="pro-mode-sub">Driver Inattention</span>
+            </div>
+          </button>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', gap: '12px', flex: '1', minHeight: '0', alignItems: 'stretch' }}>
-
-        {/* LEFT Preview */}
-        <div style={{ flex: '1', position: 'relative', background: 'var(--bg)', borderRadius: '6px', overflow: 'hidden', aspectRatio: '16 / 9', border: '1px solid var(--border)' }}>
-          {cam && cam.status === 'online' ? (
-            <>
-              <img src={`${streamUrl(cam.id)}?t=${streamKey}`} alt="preview" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }} />
-              {!isDms ? (
-                <canvas ref={canvasRef} width={vidW} height={vidH}
-                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: dragRef.current ? 'grabbing' : canvasCursor, zIndex: 2 }}
-                  onMouseDown={onMD} onMouseMove={onMM} onMouseUp={onMU}
-                />
-              ) : (
-                <div style={{
-                  position: 'absolute',
-                  top: '10px',
-                  right: '10px',
-                  zIndex: 3,
-                  pointerEvents: 'none',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '4px 10px',
-                  background: 'rgba(15, 23, 42, 0.85)',
-                  border: '1px solid rgba(255, 157, 67, 0.3)',
-                  borderRadius: '4px',
-                  color: '#ff9d43',
-                  fontSize: '8px',
-                  fontWeight: '700',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  backdropFilter: 'blur(4px)'
-                }}>
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ff9d43', display: 'inline-block', animation: 'pulse 1.5s infinite' }} />
-                  <span>DMS Face Mesh Tracking Active</span>
-                </div>
-              )}
-            </>
-          ) : (
-            // Modern empty state placeholder
-            <div style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: `radial-gradient(circle, var(--border2) 1px, transparent 1px), ${isDms ? 'rgba(255, 157, 67, 0.03)' : 'rgba(59, 130, 246, 0.03)'}`,
-              backgroundSize: '16px 16px',
-              color: 'var(--t1)',
-              zIndex: 1,
-              padding: '16px',
-              userSelect: 'none'
-            }}>
-              {/* Laser scanner line sweep */}
-              <div className="laser-line" style={{ 
-                background: `linear-gradient(90deg, transparent, ${isDms ? '#ff9d43' : '#3b82f6'}, transparent)`, 
-                boxShadow: `0 0 10px ${isDms ? '#ff9d43' : '#3b82f6'}` 
-              }} />
-
-              {/* HUD corners */}
-              <div style={{ position: 'absolute', top: 10, left: 10, width: 10, height: 10, borderLeft: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, borderTop: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, opacity: 0.6 }} />
-              <div style={{ position: 'absolute', top: 10, right: 10, width: 10, height: 10, borderRight: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, borderTop: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, opacity: 0.6 }} />
-              <div style={{ position: 'absolute', bottom: 10, left: 10, width: 10, height: 10, borderLeft: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, borderBottom: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, opacity: 0.6 }} />
-              <div style={{ position: 'absolute', bottom: 10, right: 10, width: 10, height: 10, borderRight: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, borderBottom: `2px solid ${isDms ? '#ff9d43' : '#3b82f6'}`, opacity: 0.6 }} />
-
-              {/* HUD Graphics in center background */}
-              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.15 }}>
-                {isDms ? (
-                  <svg width="100%" height="100%" viewBox="0 0 400 225" style={{ color: 'var(--t1)' }}>
-                    <path d="M150 70 C150 40, 250 40, 250 70 C250 110, 230 150, 200 170 C170 150, 150 110, 150 70 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 3" />
-                    <circle cx="180" cy="80" r="4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                    <circle cx="220" cy="80" r="4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                    <circle cx="180" cy="80" r="1" fill="currentColor" />
-                    <circle cx="220" cy="80" r="1" fill="currentColor" />
-                    <path d="M200 80 L200 110 L205 115" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M185 130 Q200 140, 215 130 Q200 135, 185 130" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                    <line x1="200" y1="20" x2="200" y2="205" stroke="currentColor" strokeWidth="0.5" strokeDasharray="5 5" />
-                    <line x1="50" y1="112" x2="350" y2="112" stroke="currentColor" strokeWidth="0.5" strokeDasharray="5 5" />
-                    <circle cx="200" cy="112" r="60" fill="none" stroke="currentColor" strokeWidth="0.5" />
-                    <circle cx="200" cy="112" r="90" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="4 4" />
-                  </svg>
-                ) : (
-                  <svg width="100%" height="100%" viewBox="0 0 400 225" style={{ color: 'var(--t1)' }}>
-                    <path d="M50 225 L170 80 L230 80 L350 225" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 4" />
-                    <line x1="20" y1="80" x2="380" y2="80" stroke="currentColor" strokeWidth="1" strokeDasharray="2 2" />
-                    <line x1="100" y1="160" x2="300" y2="160" stroke="currentColor" strokeWidth="2" />
-                    <line x1="120" y1="130" x2="280" y2="130" stroke="currentColor" strokeWidth="1" strokeDasharray="3 3" />
-                    <circle cx="200" cy="120" r="30" fill="none" stroke="currentColor" strokeWidth="0.5" />
-                    <circle cx="200" cy="120" r="6" fill="none" stroke="currentColor" strokeWidth="1" />
-                    <line x1="200" y1="85" x2="200" y2="155" stroke="currentColor" strokeWidth="0.5" />
-                    <line x1="165" y1="120" x2="235" y2="120" stroke="currentColor" strokeWidth="0.5" />
-                  </svg>
+      {/* BODY CONTENT */}
+      <div className="cfg-pro-body">
+        {!isDms ? (
+          <>
+            {/* Toolbar Action Row */}
+            <div className="cfg-traffic-toolbar">
+              <div className="cfg-btn-group">
+                <button
+                  type="button"
+                  onClick={handleStartDrawOnFeed}
+                  className={`cfg-action-btn primary`}
+                  title="Click 4 points on the live camera stream above to draw a 3D stop zone"
+                >
+                  <i className="fa-solid fa-pen-ruler" />
+                  <span>{isDrawingZone ? 'Drawing Active...' : 'Draw 3D Zone on Feed'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAdd3DZone}
+                  className="cfg-action-btn"
+                  title="Add a 3D perspective quad stop zone"
+                >
+                  <i className="fa-solid fa-cube" />
+                  <span>Add 3D Quad</span>
+                </button>
+                {zones.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearAll}
+                    className="cfg-action-btn danger icon-only"
+                    title="Clear All Zones"
+                  >
+                    <i className="fa-solid fa-trash-can" />
+                  </button>
                 )}
-              </div>
-
-              {/* Central Display Card */}
-              <div style={{
-                textAlign: 'center',
-                maxWidth: '85%',
-                padding: '12px 18px',
-                background: 'var(--panel)',
-                border: '1px solid var(--border2)',
-                borderRadius: '6px',
-                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.18)',
-                backdropFilter: 'blur(6px)',
-                zIndex: 3,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '5px'
-              }}>
-                {isDms ? (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px', fontWeight: '700', color: '#ff9d43', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                      <i className="fa-solid fa-face-viewfinder" style={{ fontSize: '13px' }} />
-                      <span>Cabin Monitor (DMS) Standby</span>
-                    </div>
-                    <div style={{ fontSize: '9px', color: 'var(--t2)', lineHeight: '1.4' }}>
-                      Facial Keypoint Calibration maps driver fatigue and phone usage. Click "Start Camera" below to launch the video scan.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px', fontWeight: '700', color: '#3b82f6', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                      <i className="fa-solid fa-road" style={{ fontSize: '13px' }} />
-                      <span>Intersection Compliance Standby</span>
-                    </div>
-                    <div style={{ fontSize: '9px', color: 'var(--t2)', lineHeight: '1.4' }}>
-                      Intersection Stop-Line Monitor tracks vehicle stop compliance. Draw your detection zones when the video feed is live.
-                    </div>
-                  </>
-                )}
-                <span style={{ fontSize: '8px', color: 'var(--t3)', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', textTransform: 'uppercase' }}>
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#64748b', display: 'inline-block' }} />
-                  Camera Feed Offline
-                </span>
               </div>
             </div>
-          )}
-        </div>
 
-        {/* RIGHT Configuration settings */}
-        <div style={{ width: '155px', display: 'flex', flexDirection: 'column', gap: '10px', background: 'var(--bg)', border: '1px solid var(--border2)', padding: '10px', borderRadius: '6px' }}>
-          {!isDms ? (
-            <>
-              <div style={{ fontSize: '10px', fontWeight: '700', color: 'var(--t1)', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>Stop Zone Settings</div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ fontSize: '9px', color: 'var(--t2)' }}>Zone Name</div>
-                <input className="f-input" style={{ fontSize: '9px', padding: '4px 6px', background: 'var(--bg)' }} value={lineName} onChange={e => setLineName(e.target.value)} />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ fontSize: '9px', color: 'var(--t2)' }}>Active Zones ({zones.length})</div>
-                {zones.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                    {zones.map((zone, i) => (
-                      <div key={i} style={{
-                        fontSize: '9px',
-                        background: 'var(--bg)',
-                        padding: '4px 6px',
-                        border: '1px solid var(--border2)',
-                        borderRadius: '3px',
-                        color: 'var(--t1)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '5px'
-                      }}>
-                        <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: STOP_LINE_COLORS[i % STOP_LINE_COLORS.length], flexShrink: 0 }} />
-                        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                          <span style={{ fontWeight: '600' }}>Zone {i + 1}</span>
-                          <span style={{ fontSize: '7px', color: 'var(--t3)', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            P1:({zone[0].x},{zone[0].y}) → P2:({zone[1].x},{zone[1].y})
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => deleteLine(i)}
-                          title={`Delete Zone ${i + 1}`}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: 'var(--t3)',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            padding: '0 2px',
-                            lineHeight: '1',
-                            transition: 'color 0.15s',
-                            flexShrink: 0
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
-                          onMouseLeave={e => e.currentTarget.style.color = 'var(--t3)'}
-                        >×</button>
+            {/* Zones Deck */}
+            <div className="cfg-zones-deck">
+              {zones.length > 0 ? (
+                zones.map((zone, i) => (
+                  <div key={i} className="cfg-zone-card">
+                    <div className="cfg-zone-left">
+                      <span className="cfg-zone-dot" style={{ background: STOP_LINE_COLORS[i % STOP_LINE_COLORS.length], color: STOP_LINE_COLORS[i % STOP_LINE_COLORS.length] }} />
+                      <div className="cfg-zone-meta">
+                        <span className="cfg-zone-name">Zone {i + 1} — 3D Perspective Stop Zone</span>
+                        <span className="cfg-zone-coords">
+                          Exit P1-P2: ({zone[0]?.x}, {zone[0]?.y}) → ({zone[1]?.x}, {zone[1]?.y}) · 4 Nodes
+                        </span>
                       </div>
-                    ))}
+                    </div>
+                    <button
+                      type="button"
+                      className="cfg-zone-del-btn"
+                      onClick={() => deleteZone(i)}
+                      title={`Delete Zone ${i + 1}`}
+                    >×</button>
                   </div>
-                ) : (
-                  <div style={{ fontSize: '9px', background: 'var(--bg)', padding: '4px 6px', border: '1px dashed var(--border2)', borderRadius: '3px', color: 'var(--t3)', textAlign: 'center' }}>
-                    No zones configured
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  let w = 1920, h = 1080
-                  if (activeCam?.resolution) {
-                    const parts = activeCam.resolution.split('x')
-                    if (parts.length === 2) {
-                      w = parseInt(parts[0]) || 1920
-                      h = parseInt(parts[1]) || 1080
-                    }
-                  }
-                  const offset = zones.length * 40
-                  const newZone = [
-                    { x: Math.round(w * 0.35) + offset, y: Math.round(h * 0.55) + offset },
-                    { x: Math.round(w * 0.65) + offset, y: Math.round(h * 0.55) + offset },
-                    { x: Math.round(w * 0.8) + offset,  y: Math.round(h * 0.85) + offset },
-                    { x: Math.round(w * 0.2) + offset,  y: Math.round(h * 0.85) + offset }
-                  ]
-                  const updated = [...zones, newZone]
-                  setZones(updated)
-                  scaleAndSave(updated)
-                }}
-                className="btn-accent"
-                style={{ fontSize: '9px', padding: '5px 8px', marginTop: '5px', width: '100%', cursor: 'pointer' }}
-              >
-                <i className="fa-solid fa-plus" style={{ marginRight: '4px' }} />
-                Add Stop Zone
-              </button>
-
-              <div style={{ flex: '1' }}></div>
-              {zones.length > 0 && (
-                <div style={{ fontSize: '8px', color: '#10b981', fontWeight: '600', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-                  <i className="fa-solid fa-check-circle" /> {zones.length} zone{zones.length !== 1 ? 's' : ''} auto-saved
+                ))
+              ) : (
+                <div style={{
+                  padding: '16px',
+                  textAlign: 'center',
+                  background: 'var(--bg)',
+                  border: '1px dashed var(--border2)',
+                  borderRadius: '6px',
+                  color: 'var(--t3)',
+                  fontSize: '10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  <i className="fa-solid fa-draw-polygon" style={{ fontSize: '18px', opacity: 0.5 }} />
+                  <span>No Stop Zones defined yet. Click <b>"Draw 3D Zone on Feed"</b> or <b>"Add 3D Quad"</b> to begin.</span>
                 </div>
               )}
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: '10px', fontWeight: '700', color: 'var(--t1)', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>DMS Configuration</div>
+            </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '9px', color: 'var(--t2)' }}>
-                <span>Active Cabin Triggers</span>
-                <div style={{ background: 'var(--panel)', padding: '6px 8px', border: '1px solid var(--border2)', borderRadius: '3px', color: 'var(--t2)', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <div>• Phone Proximity: <b style={{ color: '#ff9d43' }}>Active</b></div>
-                  <div>• Smoking Monitor: <b style={{ color: '#ff9d43' }}>Active</b></div>
-                  <div>• Eating & Drinking: <b style={{ color: '#ff9d43' }}>Active</b></div>
-                </div>
+            {/* Pro Hint Banner */}
+            <div className="cfg-pro-hint">
+              <i className="fa-solid fa-lightbulb" />
+              <div>
+                <b>Live Interactive Calibration:</b> Calibrate directly on the Live Feed above! Click & drag any corner handle (1–4) to skew perspective to the road, or click inside any zone to drag the entire box.
               </div>
+            </div>
+          </>
+        ) : (
+          <div className="dms-pro-deck">
+            <div className="dms-feature-grid">
+              <div className="dms-feature-card">
+                <span className="dms-feat-title"><i className="fa-solid fa-eye-slash" style={{ color: '#2563eb' }} /> Micro-Sleep / EAR</span>
+                <span className="dms-feat-val">● Continuous 1.5s Threshold</span>
+              </div>
+              <div className="dms-feature-card">
+                <span className="dms-feat-title"><i className="fa-solid fa-face-tired" style={{ color: '#ea580c' }} /> Yawning / MAR</span>
+                <span className="dms-feat-val">● Continuous 2.0s Threshold</span>
+              </div>
+              <div className="dms-feature-card">
+                <span className="dms-feat-title"><i className="fa-solid fa-mobile-screen-button" style={{ color: '#ef4444' }} /> Phone Distraction</span>
+                <span className="dms-feat-val">● Hand-to-Ear AI Tracking</span>
+              </div>
+              <div className="dms-feature-card">
+                <span className="dms-feat-title"><i className="fa-solid fa-smoking" style={{ color: '#7c3aed' }} /> Smoking & Gaze</span>
+                <span className="dms-feat-val">● Head Pose Inattention</span>
+              </div>
+            </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '9px', color: 'var(--t2)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>Alarm Sound</span>
-                  <button 
-                    type="button"
-                    title={previewPlaying ? "Stop sound preview" : "Play sound preview"}
-                    onClick={handleTogglePreview}
-                    style={{ background: 'none', border: 'none', color: previewPlaying ? '#ef4444' : 'var(--t2)', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', transition: 'color 0.15s' }}
-                    onMouseEnter={(e) => e.currentTarget.style.color = previewPlaying ? '#ef4444' : 'var(--t1)'}
-                    onMouseLeave={(e) => e.currentTarget.style.color = previewPlaying ? '#ef4444' : 'var(--t2)'}
-                  >
-                    {previewPlaying ? (
-                      <i className="fa-solid fa-volume-xmark" style={{ fontSize: '10px' }} />
-                    ) : (
-                      <i className="fa-solid fa-volume-high" style={{ fontSize: '10px' }} />
-                    )}
-                  </button>
-                </div>
-                <select
-                  className="mini-sel"
-                  style={{ fontSize: '9px', padding: '4px 6px', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: '3px', color: 'var(--t1)', width: '100%', outline: 'none' }}
-                  value={settings.dms_beeper_type || 'default'}
-                  onChange={(e) => onSaveSettings && onSaveSettings({ dms_beeper_type: e.target.value })}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'var(--bg)', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--t1)' }}>In-Cabin Alarm Tone:</span>
+                <button
+                  type="button"
+                  onClick={handleTogglePreview}
+                  style={{
+                    background: previewPlaying ? 'rgba(239, 68, 68, 0.15)' : 'rgba(37, 99, 235, 0.15)',
+                    color: previewPlaying ? '#ef4444' : '#2563eb',
+                    border: `1px solid ${previewPlaying ? 'rgba(239, 68, 68, 0.3)' : 'rgba(37, 99, 235, 0.3)'}`,
+                    borderRadius: '4px',
+                    padding: '3px 8px',
+                    cursor: 'pointer',
+                    fontSize: '9.5px',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
                 >
-                  <option value="default">Default Beep</option>
-                  <option value="high_intensity">🔊 High Intensity Horn</option>
-                  <option value="truck_horn">🚚 Truck Air Horn</option>
-                  <option value="pulsing_siren">🚨 Pulsing Siren</option>
-                  <option value="nuclear_meltdown">🚨 Long Siren</option>
-                  <option value="klaxon">📢 Industrial Klaxon</option>
-                </select>
+                  <i className={`fa-solid ${previewPlaying ? 'fa-volume-xmark' : 'fa-volume-high'}`} />
+                  <span>{previewPlaying ? 'Stop Audio' : 'Test Tone'}</span>
+                </button>
               </div>
-
-              <div style={{ flex: '1' }}></div>
-              <div style={{ fontSize: '8px', color: '#475569', textAlign: 'center', lineHeight: '1.2' }}>
-                Face templates calibrate in real-time. Switch profiles below.
-              </div>
-            </>
-          )}
-
-          <button onClick={handleToggleMode} className="btn-accent" style={{
-            width: '100%',
-            padding: '7px',
-            fontSize: '9px',
-            fontWeight: '700',
-            background: 'transparent',
-            border: `1px solid ${isDms ? 'rgba(37,99,235,0.4)' : 'rgba(235,120,10,0.4)'}`,
-            color: isDms ? '#3b82f6' : '#ff9d43',
-            marginTop: '2px'
-          }}>
-            <i className={`fa-solid ${isDms ? 'fa-car' : 'fa-user-shield'}`} style={{ marginRight: '4px' }} />
-            {isDms ? 'Switch to Traffic' : 'Switch to DMS'}
-          </button>
-        </div>
+              <select
+                className="mini-sel"
+                style={{ fontSize: '10px', padding: '6px 8px', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: '4px', color: 'var(--t1)', width: '100%', outline: 'none' }}
+                value={settings?.dms_beeper_type || 'default'}
+                onChange={(e) => onSaveSettings && onSaveSettings({ dms_beeper_type: e.target.value })}
+              >
+                <option value="default">Default Alert Beep</option>
+                <option value="high_intensity">🔊 High Intensity Awakening Horn</option>
+                <option value="truck_horn">🚚 Dual Truck Air Horn</option>
+                <option value="pulsing_siren">🚨 High Pitch Pulsing Siren</option>
+                <option value="nuclear_meltdown">🚨 Industrial Warning Siren</option>
+                <option value="klaxon">📢 Loud Klaxon Alarm</option>
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* BOTTOM COMPONENT Action Row */}
-      <div style={{ display: 'flex', gap: '10px', marginTop: '12px', alignItems: 'stretch' }}>
-        <button
-          onClick={cam?.status === 'online' ? onStop : onStart}
-          style={{
-            flex: '2',
-            padding: '8px 16px',
-            border: 'none',
-            borderRadius: '4px',
-            background: cam?.status === 'online'
-              ? 'linear-gradient(135deg, #dc2626, #b91c1c)'
-              : 'linear-gradient(135deg, #059669, #047857)',
-            color: '#fff',
-            fontSize: '10px',
-            fontWeight: '700',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            cursor: 'pointer',
-            boxShadow: cam?.status === 'online'
-              ? '0 4px 12px rgba(220, 38, 38, 0.25)'
-              : '0 4px 12px rgba(5, 150, 105, 0.25)',
-            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-            minHeight: '32px',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px'
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.transform = 'translateY(-1px)';
-            e.currentTarget.style.boxShadow = cam?.status === 'online'
-              ? '0 6px 16px rgba(220, 38, 38, 0.35)'
-              : '0 6px 16px rgba(5, 150, 105, 0.35)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.transform = 'none';
-            e.currentTarget.style.boxShadow = cam?.status === 'online'
-              ? '0 4px 12px rgba(220, 38, 38, 0.25)'
-              : '0 4px 12px rgba(5, 150, 105, 0.25)';
-          }}
-        >
-          <i className={`fa-solid ${cam?.status === 'online' ? 'fa-stop' : 'fa-play'}`} style={{ fontSize: '11px' }} />
-          <span>{cam?.status === 'online' ? 'Stop Analysis' : 'Start Analysis'}</span>
-        </button>
-        {!isDms && (
-          <button style={{ flex: '1', padding: '8px', border: 'none', borderRadius: '4px', background: 'var(--panel)', border: '1px solid var(--border2)', color: '#eab308', fontSize: '10px', fontWeight: '600', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer' }} onClick={clearAll}>
-            <i className="fa-solid fa-gear" /> Reset Zones
-          </button>
-        )}
+      {/* PINNED FIXED FOOTER ACTION ROW */}
+      <div className="cfg-pro-footer">
+        {(() => {
+          const isOnline = cam?.status === 'online' || !!cam?.runtime_status?.running
+          return (
+            <button
+              onClick={isOnline ? onStop : onStart}
+              disabled={streamLoading}
+              className={`cfg-start-btn ${isOnline ? 'stop' : 'start'} ${streamLoading ? 'loading' : ''}`}
+            >
+              {streamLoading ? (
+                <>
+                  <i className="fa-solid fa-circle-notch fa-spin" />
+                  <span>{isOnline ? 'Stopping Stream...' : 'Starting Stream...'}</span>
+                </>
+              ) : (
+                <>
+                  <i className={`fa-solid ${isOnline ? 'fa-stop' : 'fa-play'}`} />
+                  <span>{isOnline ? 'Stop Stream Analysis' : 'Start Live Analysis'}</span>
+                </>
+              )}
+            </button>
+          )
+        })()}
       </div>
     </div>
   )
@@ -1311,7 +965,7 @@ function CameraConfig({ activeCam, onStart, onStop, onSaveConfig, settings, stre
 
 
 /* ─────────────────────────── LIVE VIEW ─────────────────────────── */
-function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines: zones, setLines: setZones, onSaveConfig }) {
+function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines: zones, setLines: setZones, onSaveConfig, onStart, onStop, streamLoading, isDrawingZone, setIsDrawingZone }) {
   const isDms = telemetry && telemetry.mode === 'driver'
   const activeViolations = isDms && telemetry.active_violations ? telemetry.active_violations : []
 
@@ -1337,18 +991,116 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
 
   /* ── Stop-zone drawing on the live preview canvas ── */
   const liveCanvasRef = useRef(null)
-  const liveDragRef = useRef(null) // { zoneIdx, pointIdx }
+  const liveDragRef = useRef(null) // { type: 'point'|'zone', zoneIdx, pointIdx, startX, startY, origPoints }
   const [liveCursor, setLiveCursor] = useState('default')
+  const [streamProtocol, setStreamProtocol] = useState('mjpeg') // 'mjpeg' (smooth default) | 'webrtc'
+  const videoRef = useRef(null)
+  const [imgLoaded, setImgLoaded] = useState(false)
 
-  const findLiveEndpoint = (p) => {
+  const [playerSkin, setPlayerSkin] = useState(
+    () => localStorage.getItem('vigilix_player_skin') || 'winamp-amber'
+  )
+
+  const handleSkinChange = (newSkin) => {
+    setPlayerSkin(newSkin)
+    localStorage.setItem('vigilix_player_skin', newSkin)
+  }
+
+  useEffect(() => {
+    setImgLoaded(false)
+    if (activeCam?.status === 'online' || activeCam?.runtime_status?.running) {
+      const timer = setTimeout(() => setImgLoaded(true), 600)
+      return () => clearTimeout(timer)
+    } else {
+      setImgLoaded(false)
+    }
+  }, [activeCam?.id, activeCam?.status, activeCam?.runtime_status?.running, streamKey])
+
+  // 3D Perspective interactive click-to-draw state
+  const [drawnPoints, setDrawnPoints] = useState([])
+  const [mousePos, setMousePos] = useState(null)
+
+  useEffect(() => {
+    if (!activeCam || activeCam.status !== 'online' || streamProtocol !== 'webrtc') return
+    let pc = null
+    let active = true
+
+    async function initWebRTC() {
+      if (!videoRef.current) return
+      try {
+        pc = await startWebRTCStream(activeCam.id, videoRef.current, (state) => {
+          if (!active) return
+          if (state === 'connected') {
+            setStreamProtocol('webrtc')
+          } else if (state === 'failed') {
+            setStreamProtocol('mjpeg')
+          }
+        })
+        if (!pc && active) {
+          setStreamProtocol('mjpeg')
+        }
+      } catch {
+        if (active) setStreamProtocol('mjpeg')
+      }
+    }
+
+    initWebRTC()
+
+    return () => {
+      active = false
+      if (pc) pc.close()
+    }
+  }, [activeCam?.id, activeCam?.status, streamKey, streamProtocol])
+
+  // ESC key cancels drawing mode
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape' && isDrawingZone) {
+        setIsDrawingZone?.(false)
+        setDrawnPoints([])
+        setMousePos(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isDrawingZone, setIsDrawingZone])
+
+  // Ray-casting point-in-polygon helper
+  const isPointInPoly = (pt, poly) => {
+    if (!poly || poly.length < 3) return false
+    let inside = false
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y
+      const xj = poly[j].x, yj = poly[j].y
+      const intersect = ((yi > pt.y) !== (yj > pt.y)) &&
+        (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)
+      if (intersect) inside = !inside
+    }
+    return inside
+  }
+
+  const findLiveHit = (p) => {
     const cv = liveCanvasRef.current
-    const hitRadius = 22 * (cv ? (cv.width / 800) : 1)
+    const hitRadius = 24 * (cv ? (cv.width / 800) : 1)
+    // 1. Check corner vertices first (highest priority)
     for (let i = 0; i < zones.length; i++) {
       const zone = zones[i]
       for (let j = 0; j < zone.length; j++) {
         const pt = zone[j]
         const d = Math.hypot(p.x - pt.x, p.y - pt.y)
-        if (d <= hitRadius) return { zoneIdx: i, pointIdx: j }
+        if (d <= hitRadius) return { type: 'point', zoneIdx: i, pointIdx: j }
+      }
+    }
+    // 2. Check if inside any polygon (to drag whole zone)
+    for (let i = zones.length - 1; i >= 0; i--) {
+      if (isPointInPoly(p, zones[i])) {
+        return {
+          type: 'zone',
+          zoneIdx: i,
+          startX: p.x,
+          startY: p.y,
+          origPoints: zones[i].map(pt => ({ ...pt }))
+        }
       }
     }
     return null
@@ -1357,7 +1109,10 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
   const livePt = (e) => {
     const cv = liveCanvasRef.current; if (!cv) return { x: 0, y: 0 }
     const r = cv.getBoundingClientRect()
-    return { x: Math.round((e.clientX - r.left) * (cv.width / r.width)), y: Math.round((e.clientY - r.top) * (cv.height / r.height)) }
+    return {
+      x: Math.round((e.clientX - r.left) * (cv.width / r.width)),
+      y: Math.round((e.clientY - r.top) * (cv.height / r.height))
+    }
   }
 
   const liveScaleAndSave = useCallback((allZones) => {
@@ -1368,14 +1123,17 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
     })
   }, [activeCam, onSaveConfig])
 
-  const drawLiveLines = useCallback((ctx, cv, zonesList, activeDrag) => {
+  const drawLiveLines = useCallback((ctx, cv, zonesList, activeDrag, drawPts, curMouse) => {
     ctx.clearRect(0, 0, cv.width, cv.height)
     const scale = cv.width / 800
+
+    // 1. Draw all configured 3D perspective zones
     zonesList.forEach((zone, idx) => {
+      if (!zone || zone.length < 3) return
       const color = STOP_LINE_COLORS[idx % STOP_LINE_COLORS.length]
-      
-      // 1. Draw the translucent filled polygon
-      ctx.fillStyle = color + '26' // 15% opacity hex
+
+      // Translucent filled polygon
+      ctx.fillStyle = color + '26' // ~15% opacity hex
       ctx.beginPath()
       ctx.moveTo(zone[0].x, zone[0].y)
       for (let i = 1; i < zone.length; i++) {
@@ -1383,40 +1141,76 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
       }
       ctx.closePath()
       ctx.fill()
-      
-      // 2. Draw boundaries
-      // Red dashed line for the Exit Line (P1 -> P2)
-      ctx.strokeStyle = '#ef4444' // Red
+
+      // Red dashed line for the Exit Stop Line (P1 -> P2)
+      ctx.save()
+      ctx.shadowColor = 'rgba(239, 68, 68, 0.7)'
+      ctx.shadowBlur = 8 * scale
+      ctx.strokeStyle = '#ef4444'
       ctx.lineWidth = 4 * scale
       ctx.setLineDash([12 * scale, 6 * scale])
       ctx.beginPath()
       ctx.moveTo(zone[0].x, zone[0].y)
       ctx.lineTo(zone[1].x, zone[1].y)
       ctx.stroke()
-      ctx.setLineDash([])
-      
+      ctx.restore()
+
       // Softer solid lines for other boundaries
       ctx.strokeStyle = color
-      ctx.lineWidth = 2 * scale
+      ctx.lineWidth = 2.5 * scale
+      ctx.setLineDash([])
       ctx.beginPath()
       ctx.moveTo(zone[1].x, zone[1].y)
-      ctx.lineTo(zone[2].x, zone[2].y)
-      ctx.lineTo(zone[3].x, zone[3].y)
+      for (let i = 2; i < zone.length; i++) {
+        ctx.lineTo(zone[i].x, zone[i].y)
+      }
       ctx.lineTo(zone[0].x, zone[0].y)
       ctx.stroke()
-      
-      // 3. Draw corner handles (nodes)
-      const isDraggingZone = activeDrag && activeDrag.zoneIdx === idx
+
+      // Centroid Zone Label pill
+      let cx = 0, cy = 0
+      zone.forEach(pt => { cx += pt.x; cy += pt.y })
+      cx = Math.round(cx / zone.length)
+      cy = Math.round(cy / zone.length)
+
+      const isDraggingThisZone = activeDrag && activeDrag.zoneIdx === idx
+      const zoneName = `Zone ${idx + 1}`
+
+      ctx.save()
+      ctx.font = `bold ${10 * scale}px sans-serif`
+      const tw = ctx.measureText(zoneName).width
+      const padX = 7 * scale
+      const pillH = 18 * scale
+      ctx.fillStyle = isDraggingThisZone && activeDrag.type === 'zone' ? color : 'rgba(15, 23, 42, 0.85)'
+      ctx.strokeStyle = color
+      ctx.lineWidth = 1.5 * scale
+      ctx.beginPath()
+      if (ctx.roundRect) {
+        ctx.roundRect(cx - tw / 2 - padX, cy - pillH / 2, tw + padX * 2, pillH, 5 * scale)
+      } else {
+        ctx.rect(cx - tw / 2 - padX, cy - pillH / 2, tw + padX * 2, pillH)
+      }
+      ctx.fill()
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(zoneName, cx, cy)
+      ctx.restore()
+
+      // Corner handles (nodes 1 to 4)
       zone.forEach((pt, pIdx) => {
-        const isDraggingPoint = isDraggingZone && activeDrag.pointIdx === pIdx
+        const isDraggingPoint = isDraggingThisZone && activeDrag.type === 'point' && activeDrag.pointIdx === pIdx
+        const r = isDraggingPoint ? 12 * scale : 9 * scale
+
         ctx.beginPath()
-        ctx.arc(pt.x, pt.y, isDraggingPoint ? 11 * scale : 8 * scale, 0, Math.PI * 2)
+        ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2)
         ctx.fillStyle = isDraggingPoint ? color : '#ffffff'
         ctx.fill()
         ctx.strokeStyle = color
-        ctx.lineWidth = 2 * scale
+        ctx.lineWidth = 2.5 * scale
         ctx.stroke()
-        
+
         ctx.fillStyle = isDraggingPoint ? '#ffffff' : (pIdx < 2 ? '#ef4444' : '#10b981')
         ctx.font = `bold ${10 * scale}px sans-serif`
         ctx.textAlign = 'center'
@@ -1424,13 +1218,91 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
         ctx.fillText((pIdx + 1).toString(), pt.x, pt.y)
       })
     })
+
+    // 2. Render in-progress drawing points & rubber-band guides
+    if (drawPts && drawPts.length > 0) {
+      const drawColor = '#3b82f6'
+      drawPts.forEach((pt, i) => {
+        ctx.beginPath()
+        ctx.arc(pt.x, pt.y, 11 * scale, 0, Math.PI * 2)
+        ctx.fillStyle = drawColor
+        ctx.fill()
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 2.5 * scale
+        ctx.stroke()
+
+        ctx.fillStyle = '#ffffff'
+        ctx.font = `bold ${11 * scale}px sans-serif`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText((i + 1).toString(), pt.x, pt.y)
+      })
+
+      if (drawPts.length > 1) {
+        ctx.strokeStyle = '#3b82f6'
+        ctx.lineWidth = 3 * scale
+        ctx.setLineDash([8 * scale, 4 * scale])
+        ctx.beginPath()
+        ctx.moveTo(drawPts[0].x, drawPts[0].y)
+        for (let i = 1; i < drawPts.length; i++) {
+          ctx.lineTo(drawPts[i].x, drawPts[i].y)
+        }
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+
+      if (curMouse) {
+        const lastPt = drawPts[drawPts.length - 1]
+        ctx.strokeStyle = '#60a5fa'
+        ctx.lineWidth = 2.5 * scale
+        ctx.setLineDash([6 * scale, 6 * scale])
+        ctx.beginPath()
+        ctx.moveTo(lastPt.x, lastPt.y)
+        ctx.lineTo(curMouse.x, curMouse.y)
+        ctx.stroke()
+        ctx.setLineDash([])
+
+        ctx.beginPath()
+        ctx.arc(curMouse.x, curMouse.y, 9 * scale, 0, Math.PI * 2)
+        ctx.strokeStyle = '#60a5fa'
+        ctx.lineWidth = 2 * scale
+        ctx.stroke()
+
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)'
+        ctx.font = `bold ${10 * scale}px sans-serif`
+        const msg = `Click: Point ${drawPts.length + 1}`
+        const mw = ctx.measureText(msg).width
+        ctx.fillRect(curMouse.x + 14 * scale, curMouse.y - 11 * scale, mw + 10 * scale, 22 * scale)
+        ctx.fillStyle = '#93c5fd'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(msg, curMouse.x + 19 * scale, curMouse.y)
+      }
+    }
   }, [])
 
   const onLiveMD = (e) => {
     if (isDms) return
     e.preventDefault()
     const p = livePt(e)
-    const hit = findLiveEndpoint(p)
+
+    if (isDrawingZone) {
+      if (drawnPoints.length < 3) {
+        setDrawnPoints(prev => [...prev, p])
+      } else {
+        // 4th point: complete 3D quad!
+        const newZone = [...drawnPoints, p]
+        const updated = [...zones, newZone]
+        setZones(updated)
+        liveScaleAndSave(updated)
+        setDrawnPoints([])
+        setIsDrawingZone?.(false)
+        setMousePos(null)
+      }
+      return
+    }
+
+    const hit = findLiveHit(p)
     if (hit) {
       liveDragRef.current = hit
     }
@@ -1441,49 +1313,85 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
     const p = livePt(e); const cv = liveCanvasRef.current; if (!cv) return
     const ctx = cv.getContext('2d')
 
-    // Dragging an endpoint
+    if (isDrawingZone) {
+      setMousePos(p)
+      drawLiveLines(ctx, cv, zones, null, drawnPoints, p)
+      setLiveCursor('crosshair')
+      return
+    }
+
+    // Dragging an endpoint or whole zone
     if (liveDragRef.current) {
-      const { zoneIdx, pointIdx } = liveDragRef.current
-      const updated = zones.map((z, zIdx) => {
-        if (zIdx !== zoneIdx) return z
-        return z.map((pt, pIdx) => 
-          pIdx === pointIdx ? { x: p.x, y: p.y } : pt
-        )
-      })
-      drawLiveLines(ctx, cv, updated, liveDragRef.current)
+      if (liveDragRef.current.type === 'point') {
+        const { zoneIdx, pointIdx } = liveDragRef.current
+        const updated = zones.map((z, zIdx) => {
+          if (zIdx !== zoneIdx) return z
+          return z.map((pt, pIdx) =>
+            pIdx === pointIdx ? { x: Math.max(0, Math.min(vidW, p.x)), y: Math.max(0, Math.min(vidH, p.y)) } : pt
+          )
+        })
+        drawLiveLines(ctx, cv, updated, liveDragRef.current, null, null)
+      } else if (liveDragRef.current.type === 'zone') {
+        const { zoneIdx, startX, startY, origPoints } = liveDragRef.current
+        const dx = p.x - startX
+        const dy = p.y - startY
+        const updated = zones.map((z, zIdx) => {
+          if (zIdx !== zoneIdx) return z
+          return origPoints.map(pt => ({
+            x: Math.max(0, Math.min(vidW, pt.x + dx)),
+            y: Math.max(0, Math.min(vidH, pt.y + dy))
+          }))
+        })
+        drawLiveLines(ctx, cv, updated, liveDragRef.current, null, null)
+      }
       return
     }
 
     // Hover cursor
-    const hit = findLiveEndpoint(p)
-    setLiveCursor(hit ? 'grab' : 'default')
+    const hit = findLiveHit(p)
+    if (hit?.type === 'point') setLiveCursor('grab')
+    else if (hit?.type === 'zone') setLiveCursor('move')
+    else setLiveCursor('default')
   }
 
   const onLiveMU = (e) => {
-    if (isDms) return
+    if (isDms || isDrawingZone) return
     const p = livePt(e)
 
-    // Finishing an endpoint drag
     if (liveDragRef.current) {
-      const { zoneIdx, pointIdx } = liveDragRef.current
-      const updated = zones.map((z, zIdx) => {
-        if (zIdx !== zoneIdx) return z
-        return z.map((pt, pIdx) => 
-          pIdx === pointIdx ? { x: p.x, y: p.y } : pt
-        )
-      })
+      let updated = zones
+      if (liveDragRef.current.type === 'point') {
+        const { zoneIdx, pointIdx } = liveDragRef.current
+        updated = zones.map((z, zIdx) => {
+          if (zIdx !== zoneIdx) return z
+          return z.map((pt, pIdx) =>
+            pIdx === pointIdx ? { x: Math.max(0, Math.min(vidW, p.x)), y: Math.max(0, Math.min(vidH, p.y)) } : pt
+          )
+        })
+      } else if (liveDragRef.current.type === 'zone') {
+        const { zoneIdx, startX, startY, origPoints } = liveDragRef.current
+        const dx = p.x - startX
+        const dy = p.y - startY
+        updated = zones.map((z, zIdx) => {
+          if (zIdx !== zoneIdx) return z
+          return origPoints.map(pt => ({
+            x: Math.max(0, Math.min(vidW, pt.x + dx)),
+            y: Math.max(0, Math.min(vidH, pt.y + dy))
+          }))
+        })
+      }
       setZones(updated)
       liveDragRef.current = null
       liveScaleAndSave(updated)
     }
   }
 
-  // Re-draw all lines on the live canvas whenever `zones` changes
+  // Re-draw all lines on the live canvas whenever `zones`, `isDrawingZone`, or `drawnPoints` changes
   useEffect(() => {
     const cv = liveCanvasRef.current; if (!cv || isDms) return
     const ctx = cv.getContext('2d')
-    drawLiveLines(ctx, cv, zones, null)
-  }, [zones, isDms, drawLiveLines])
+    drawLiveLines(ctx, cv, zones, null, drawnPoints, mousePos)
+  }, [zones, isDms, isDrawingZone, drawnPoints, mousePos, drawLiveLines])
 
   const handleFullscreen = () => {
     const el = document.querySelector('.live-wrap')
@@ -1493,42 +1401,205 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
   return (
     <div className="card live-card">
       <div className="card-head">
-        <span>Live View - <b>{activeCam?.name || 'No Camera'}</b> <span className="live-tag">LIVE</span></span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span>Live View - <b>{activeCam?.name || 'No Camera'}</b></span>
+          <span className="live-tag">LIVE</span>
+          {activeCam && activeCam.status === 'online' && (
+            <button
+              onClick={() => setStreamProtocol(p => p === 'mjpeg' ? 'webrtc' : 'mjpeg')}
+              title="Click to toggle between Direct MJPEG Stream (Ultra Smooth) and WebRTC Low Latency"
+              style={{
+                fontSize: '10px',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                background: streamProtocol === 'mjpeg' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                color: streamProtocol === 'mjpeg' ? '#3b82f6' : '#10b981',
+                border: `1px solid ${streamProtocol === 'mjpeg' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              <i className={streamProtocol === 'mjpeg' ? "fa-solid fa-bolt" : "fa-solid fa-satellite-dish"} />
+              {streamProtocol === 'mjpeg' ? 'MJPEG Stream (Smooth)' : 'WebRTC Stream'}
+            </button>
+          )}
+
+          {/* 3D Perspective Zone Drawing Mode Toggle */}
+          {!isDms && activeCam?.status === 'online' && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsDrawingZone?.(prev => !prev)
+                setDrawnPoints([])
+                setMousePos(null)
+              }}
+              className={`live-draw-btn ${isDrawingZone ? 'active' : ''}`}
+              title="Draw a 4-point 3D stop zone directly on the live camera stream"
+            >
+              <i className={isDrawingZone ? "fa-solid fa-xmark" : "fa-solid fa-draw-polygon"} />
+              <span>{isDrawingZone ? `Cancel Drawing (${drawnPoints.length}/4)` : '✏️ Draw 3D Zone'}</span>
+            </button>
+          )}
+          {/* Skin Selector Badge */}
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'var(--bg)', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--border2)' }}>
+            <i className="fa-solid fa-palette" style={{ fontSize: '10px', color: 'var(--accent)' }} />
+            <select
+              className="mini-sel"
+              value={playerSkin}
+              onChange={(e) => handleSkinChange(e.target.value)}
+              title="Select Player Skin (Winamp Amber, Mahogany Wood & Brass, Cyber Obsidian, Vintage Hi-Fi, Modern)"
+              style={{ border: 'none', background: 'var(--bg)', color: 'var(--t1)', padding: '1px 3px', fontSize: '9.5px', fontWeight: '600', cursor: 'pointer' }}
+            >
+              {PLAYER_SKINS.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
         <button className="icon-btn" onClick={handleFullscreen} title="Fullscreen"><i className="fa-solid fa-expand" /></button>
       </div>
+
+      <SkeuomorphicPlayer
+        skin={playerSkin}
+        onSkinChange={handleSkinChange}
+        activeCam={activeCam}
+        cameras={cameras}
+        isActiveOnline={activeCam?.status === 'online' || !!activeCam?.runtime_status?.running}
+        streamLoading={streamLoading}
+        onStart={onStart}
+        onStop={onStop}
+        onCamSwitch={onCamSwitch}
+        fps={fps}
+        telemetry={telemetry}
+        isDms={isDms}
+        onFullscreen={handleFullscreen}
+        onToggleDraw={() => setIsDrawingZone?.(prev => !prev)}
+        isDrawingZone={isDrawingZone}
+      >
       <div className={`live-wrap${isDrowsy ? ' alert-drowsy' : isDistracted ? ' alert-distracted' : ''}`}>
+        {/* Active Drawing HUD Banner Overlay */}
+        {isDrawingZone && (
+          <div className="live-drawing-hud-bar">
+            <span className="live-drawing-pulse-dot" />
+            <span><b>DRAW 3D PERSPECTIVE ZONE:</b> Click Point {drawnPoints.length + 1} of 4 on Road Surface</span>
+            <span className="live-drawing-hud-sub">[{drawnPoints.length === 0 ? 'P1: Exit Line Left' : drawnPoints.length === 1 ? 'P2: Exit Line Right' : drawnPoints.length === 2 ? 'P3: Entry Line Right' : 'P4: Entry Line Left'}] · ESC to cancel</span>
+          </div>
+        )}
+
         {activeCam && activeCam.status === 'online' ? (
           <>
-            <img key={activeCam.id} src={`${streamUrl(activeCam.id)}?t=${streamKey}`} alt="Live Feed" className="live-img"
-              style={{ pointerEvents: 'none' }}
-              onError={e => { e.target.style.display = 'none' }} />
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="live-img"
+              style={{
+                display: streamProtocol === 'webrtc' ? 'block' : 'none',
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                pointerEvents: 'none'
+              }}
+            />
+            <img
+              key={`${activeCam.id}-${streamKey}`}
+              src={`${streamUrl(activeCam.id)}?t=${streamKey}`}
+              alt="Live Feed"
+              className="live-img"
+              style={{
+                display: streamProtocol === 'mjpeg' ? 'block' : 'none',
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                pointerEvents: 'none'
+              }}
+              onLoad={() => setImgLoaded(true)}
+              onError={(e) => {
+                setTimeout(() => {
+                  if (e.target) e.target.src = `${streamUrl(activeCam.id)}?t=${Date.now()}`
+                }, 1200)
+              }}
+            />
+            {activeCam?.status === 'online' && !imgLoaded && (
+              <div className="live-ph live-connecting-hero" style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
+                <div className="live-connecting-spinner-wrap">
+                  <div className="live-connecting-radar-ring" />
+                  <div className="live-connecting-radar-ring ring-2" />
+                  <div className="live-connecting-spinner">
+                    <i className="fa-solid fa-circle-notch fa-spin" />
+                  </div>
+                </div>
+                <div className="live-paused-info">
+                  <div className="live-paused-title">{activeCam.name}</div>
+                  <div className="live-connecting-status-badge">
+                    <span className="dot-connecting" /> CONNECTING TO STREAM...
+                  </div>
+                  <div className="live-paused-hint">Starting camera feed & AI inference pipeline...</div>
+                </div>
+              </div>
+            )}
             {!isDms && (
               <canvas ref={liveCanvasRef} width={vidW} height={vidH}
-                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: liveDragRef.current ? 'grabbing' : liveCursor, zIndex: 2 }}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  cursor: isDrawingZone ? 'crosshair' : (liveDragRef.current ? (liveDragRef.current.type === 'point' ? 'grabbing' : 'move') : liveCursor),
+                  zIndex: 2
+                }}
                 onMouseDown={onLiveMD} onMouseMove={onLiveMM} onMouseUp={onLiveMU}
               />
             )}
           </>
         ) : activeCam ? (
-          <div className="live-ph" style={{ background: 'var(--bg)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-            <div style={{
-              textAlign: 'center',
-              color: 'var(--t2)',
-              padding: '28px',
-              borderRadius: '12px',
-              background: 'var(--panel)',
-              border: '1px solid var(--border2)',
-              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
-              backdropFilter: 'blur(8px)',
-              maxWidth: '350px'
-            }}>
-              <i className="fa-solid fa-video-slash" style={{ fontSize: '42px', color: '#f87171', marginBottom: '16px', display: 'block' }} />
-              <h3 style={{ color: 'var(--t1)', fontSize: '15px', fontWeight: '600', marginBottom: '8px' }}>Camera is Offline</h3>
-              <p style={{ fontSize: '11px', lineHeight: '1.6', color: 'var(--t3)', marginBottom: '0px' }}>
-                Real-time analysis is currently stopped. Click **Start Analysis** in the Calibration panel below to activate the live feed and detection engines.
-              </p>
+          streamLoading ? (
+            <div className="live-ph live-connecting-hero">
+              <div className="live-connecting-spinner-wrap">
+                <div className="live-connecting-radar-ring" />
+                <div className="live-connecting-radar-ring ring-2" />
+                <div className="live-connecting-spinner">
+                  <i className="fa-solid fa-circle-notch fa-spin" />
+                </div>
+              </div>
+              <div className="live-paused-info">
+                <div className="live-paused-title">{activeCam.name}</div>
+                <div className="live-connecting-status-badge">
+                  <span className="dot-connecting" /> CONNECTING TO STREAM...
+                </div>
+                <div className="live-paused-hint">Initializing AI inference engine & frame buffer...</div>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="live-ph live-paused-hero" onClick={onStart}>
+              <div className="live-play-glow-wrap">
+                <div className="live-play-pulse-ring" />
+                <button
+                  className="live-big-play-btn"
+                  onClick={(e) => { e.stopPropagation(); onStart(); }}
+                  title="Start Live Analysis"
+                >
+                  <i className="fa-solid fa-play" />
+                </button>
+              </div>
+              <div className="live-paused-info">
+                <div className="live-paused-title">{activeCam.name}</div>
+                <div className="live-paused-status-badge">
+                  <span className="dot-idle" /> STREAM PAUSED
+                </div>
+                <div className="live-paused-hint">Click anywhere or press Play to resume live detection</div>
+              </div>
+            </div>
+          )
         ) : (
           <div className="live-ph" style={{ background: 'var(--bg)' }}><i className="fa-solid fa-video-slash" /><p>No camera connected</p></div>
         )}
@@ -1538,7 +1609,6 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
           <div style={{ position: 'absolute', top: '12px', right: '12px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px', zIndex: 10 }}>
             {activeViolations.map((v, i) => {
               const isCrit = v.includes("Sleep") || v.includes("Phone") || v.includes("Smoking") || v.includes("Seatbelt") || v.includes("Drowsy")
-              // Map backend violation names to clear details
               const getViolationLabel = (val) => {
                 if (val.includes("Sleep")) return "FATIGUE CRITICAL: SLEEP DETECTED!";
                 if (val.includes("Yawning")) return "FATIGUE WARNING: YAWNING DETECTED!";
@@ -1577,8 +1647,6 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
           </>
         )}
 
-
-
         {/* DMS Real-time Visual Telemetry Gauges inside Live Feed */}
         {isDms && (
           <div className="dms-telemetry-panel">
@@ -1605,11 +1673,41 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
           </div>
         )}
       </div>
+      </SkeuomorphicPlayer>
+
+      {playerSkin === 'standard' && (
       <div className="live-bar">
-        <span>FPS: <b>{fps}</b></span>
-        <span>Detection: <b className="txt-green">● ON</b></span>
-        <span>Tracking: <b className="txt-green">● ON</b></span>
-        <span className="bar-spacer" />
+        {(() => {
+          const isActiveOnline = activeCam?.status === 'online' || !!activeCam?.runtime_status?.running
+          return (
+            <>
+              <button
+                className={`live-stream-btn ${isActiveOnline ? 'is-playing' : 'is-paused'} ${streamLoading ? 'loading' : ''}`}
+                onClick={isActiveOnline ? onStop : onStart}
+                disabled={streamLoading}
+                title={isActiveOnline ? 'Click to pause live analysis' : 'Click to start live analysis'}
+              >
+                {streamLoading ? (
+                  <>
+                    <i className="fa-solid fa-circle-notch fa-spin" />
+                    <span>{isActiveOnline ? 'STOPPING...' : 'STARTING...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="live-btn-dot" />
+                    <i className={`fa-solid ${isActiveOnline ? 'fa-pause' : 'fa-play'}`} />
+                    <span>{isActiveOnline ? 'PAUSE' : 'PLAY'}</span>
+                  </>
+                )}
+              </button>
+              <span className="live-bar-divider" />
+              <span>FPS: <b>{fps}</b></span>
+              <span>Detection: <b className={isActiveOnline ? "txt-green" : "txt-muted"}>{isActiveOnline ? '● ON' : '○ OFF'}</b></span>
+              <span>Tracking: <b className={isActiveOnline ? "txt-green" : "txt-muted"}>{isActiveOnline ? '● ON' : '○ OFF'}</b></span>
+              <span className="bar-spacer" />
+            </>
+          )
+        })()}
         <span>Camera:</span>
         <select className="mini-sel" value={activeCam?.id || ''} onChange={e => onCamSwitch(e.target.value)}>
           {cameras.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -1617,6 +1715,7 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
         </select>
         <button className="icon-btn-sm" title="Fullscreen" onClick={handleFullscreen}><i className="fa-solid fa-expand" /></button>
       </div>
+      )}
     </div>
   )
 }
@@ -1956,9 +2055,10 @@ function ImageModal({ preview, onClose }) {
 
 
 /* ─────────────────────────── MAIN DASHBOARD ─────────────────────────── */
-export default function Dashboard({ cameras, activeCam, stats, events, settings, onCamSwitch, onStart, onStop, onSaveSettings, onSaveConfig, onRefreshEvents, onNavigate, streamKey, telemetry, eventTrigger }) {
+export default function Dashboard({ cameras, activeCam, stats, events, settings, onCamSwitch, onStart, onStop, streamLoading, onSaveSettings, onSaveConfig, onRefreshEvents, onNavigate, streamKey, telemetry, eventTrigger }) {
   const [previewImg, setPreviewImg] = useState(null)
   const [stopLines, setStopLines] = useState([])
+  const [isDrawingZone, setIsDrawingZone] = useState(false)
 
   const camConfig = JSON.parse(activeCam?.config_json || '{}')
   const isDms = camConfig.mode === 'driver'
@@ -1987,24 +2087,6 @@ export default function Dashboard({ cameras, activeCam, stats, events, settings,
         }
       }
       
-      // If still empty and in compliance (traffic) mode, initialize a default zone
-      if ((!saved || saved.length === 0) && cfg.mode !== 'driver') {
-        let w = 1920, h = 1080
-        if (activeCam.resolution) {
-          const parts = activeCam.resolution.split('x')
-          if (parts.length === 2) {
-            w = parseInt(parts[0]) || 1920
-            h = parseInt(parts[1]) || 1080
-          }
-        }
-        saved = [[
-          { x: Math.round(w * 0.35), y: Math.round(h * 0.55) }, // P1
-          { x: Math.round(w * 0.65), y: Math.round(h * 0.55) }, // P2
-          { x: Math.round(w * 0.8),  y: Math.round(h * 0.85) }, // P3
-          { x: Math.round(w * 0.2),  y: Math.round(h * 0.85) }  // P4
-        ]]
-      }
-      
       setStopLines(saved || [])
     } catch (e) {
       console.error("Error loading camera zones:", e)
@@ -2016,18 +2098,31 @@ export default function Dashboard({ cameras, activeCam, stats, events, settings,
   // Compute stats today specifically for DMS alerts in active camera
   const dmsEventsToday = events.filter(e => {
     if (e.camera_id !== activeCam?.id) return false
-    const t = (e.timestamp || '').split(' ')
     const today = new Date().toISOString().slice(0, 10)
     const isToday = e.timestamp && e.timestamp.startsWith(today)
     const isDmsEvent = e.event_type && e.event_type !== 'Did Not Stop' && e.event_type !== 'Did Not Stop (Pedestrian Crossing)'
-    return isDmsEvent
+    return isToday && isDmsEvent
   }).length
 
   return (
     <div className="dashboard">
       {/* TOP ROW */}
       <div className="dash-top">
-        <LiveView cameras={cameras} activeCam={activeCam} onCamSwitch={onCamSwitch} telemetry={telemetry} streamKey={streamKey} lines={stopLines} setLines={setStopLines} onSaveConfig={onSaveConfig} />
+        <LiveView
+          cameras={cameras}
+          activeCam={activeCam}
+          onCamSwitch={onCamSwitch}
+          telemetry={telemetry}
+          streamKey={streamKey}
+          lines={stopLines}
+          setLines={setStopLines}
+          onSaveConfig={onSaveConfig}
+          onStart={onStart}
+          onStop={onStop}
+          streamLoading={streamLoading}
+          isDrawingZone={isDrawingZone}
+          setIsDrawingZone={setIsDrawingZone}
+        />
         <div className="dash-right">
           {/* STATS */}
           <div className="stats-row">
@@ -2064,7 +2159,20 @@ export default function Dashboard({ cameras, activeCam, stats, events, settings,
 
       {/* BOTTOM ROW */}
       <div className="dash-bottom">
-        <CameraConfig activeCam={activeCam} onStart={onStart} onStop={onStop} onSaveConfig={onSaveConfig} settings={settings} streamKey={streamKey} onSaveSettings={onSaveSettings} lines={stopLines} setLines={setStopLines} />
+        <CameraConfig
+          activeCam={activeCam}
+          onStart={onStart}
+          onStop={onStop}
+          streamLoading={streamLoading}
+          onSaveConfig={onSaveConfig}
+          settings={settings}
+          streamKey={streamKey}
+          onSaveSettings={onSaveSettings}
+          lines={stopLines}
+          setLines={setStopLines}
+          isDrawingZone={isDrawingZone}
+          setIsDrawingZone={setIsDrawingZone}
+        />
 
         <EventsTable cameras={cameras} onNavigate={onNavigate} onImageClick={setPreviewImg} eventTrigger={eventTrigger} />
         <SettingsPanel settings={settings} onSaveSettings={onSaveSettings} />
@@ -2075,3 +2183,4 @@ export default function Dashboard({ cameras, activeCam, stats, events, settings,
     </div>
   )
 }
+

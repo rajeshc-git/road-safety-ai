@@ -149,6 +149,9 @@ function playDmsBeep(alertType, beeperType = 'default') {
 
 export default function App() {
   const [page, setPage] = useState('dashboard')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('sidebar_collapsed') === 'true'
+  })
   const [cameras, setCameras] = useState([])
   const [activeCam, setActiveCam] = useState(null)
   const [stats, setStats] = useState({ events_today: 0, events_week: 0, pending_review: 0, active_cameras: 0 })
@@ -159,27 +162,41 @@ export default function App() {
   const [telemetry, setTelemetry] = useState({ attentionScore: 100.0, drowsinessLevel: 0.0, mode: 'traffic', fps: 25, width: 0, height: 0, active_violations: [] })
   const [eventTrigger, setEventTrigger] = useState(0)
 
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed(prev => {
+      const next = !prev
+      localStorage.setItem('sidebar_collapsed', String(next))
+      return next
+    })
+  }, [])
+
   const loadCameras = useCallback(async () => {
     try {
       let cams = await api.get('/api/cameras')
       if (cams.length === 0) {
-        await api.post('/api/cameras/detect')
-        cams = await api.get('/api/cameras')
+        // Trigger detection non-blockingly if no cameras are configured yet
+        api.post('/api/cameras/detect').then(() => api.get('/api/cameras')).then(c => {
+          if (c && c.length) {
+            setCameras(c)
+            setActiveCam(prev => prev || c[0])
+          }
+        }).catch(() => {})
+      } else {
+        setCameras(cams)
+        setStreamKey(Date.now())
+        
+        // Perform smart activeCam state update without stale closure
+        setActiveCam(current => {
+          if (!cams.length) return null
+          if (!current) return cams[0]
+          const fresh = cams.find(c => c.id === current.id)
+          return fresh || cams[0]
+        })
       }
-      setCameras(cams)
-      setStreamKey(Date.now())
-      
-      // Perform smart activeCam state update without stale closure
-      setActiveCam(current => {
-        if (!cams.length) return null
-        if (!current) return cams[0]
-        // Keep current cam selected but update it with fresh data (e.g. 'online' status)
-        const fresh = cams.find(c => c.id === current.id)
-        return fresh || cams[0]
-      })
-    } catch(e) { console.error(e) }
+    } catch(e) {
+      // Backend not yet ready; startup auto-sync will retry seamlessly
+    }
   }, [])
-
 
   const loadStats = useCallback(async () => {
     try { setStats(await api.get('/api/events/stats')) } catch {}
@@ -198,14 +215,37 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    // 1. Initial immediate batch load
     loadCameras(); loadStats(); loadEvents(); loadSystem(); loadSettings()
+
+    // 2. Startup auto-sync retry: if backend wasn't ready on first millisecond, retry every 1.5s until loaded
+    const startupRetry = setInterval(() => {
+      setCameras(current => {
+        if (current.length === 0) {
+          loadCameras()
+          loadStats()
+          loadEvents()
+          loadSystem()
+          loadSettings()
+        } else {
+          clearInterval(startupRetry)
+        }
+        return current
+      })
+    }, 1500)
+
+    // 3. Steady-state background polling
     const timers = [
-      setInterval(loadStats, 15000),
-      setInterval(loadEvents, 20000),
-      setInterval(loadSystem, 10000),
+      setInterval(loadStats, 10000),
+      setInterval(loadEvents, 15000),
+      setInterval(loadSystem, 8000),
     ]
-    return () => timers.forEach(clearInterval)
-  }, [])
+
+    return () => {
+      clearInterval(startupRetry)
+      timers.forEach(clearInterval)
+    }
+  }, [loadCameras, loadStats, loadEvents, loadSystem, loadSettings])
 
   useEffect(() => {
     setTelemetry({ attentionScore: 100.0, drowsinessLevel: 0.0, mode: 'traffic', fps: 25, width: 0, height: 0, active_violations: [] })
@@ -255,13 +295,53 @@ export default function App() {
     }
   }, [activeCam, settings, loadEvents, loadStats])
 
-  const handleCamSwitch = useCallback((id) => {
-    const cam = cameras.find(c => c.id === Number(id))
-    if (cam) setActiveCam(cam)
-  }, [cameras])
+  const handleCamSwitch = useCallback(async (id) => {
+    const targetCam = cameras.find(c => c.id === Number(id))
+    if (!targetCam) return
+    setActiveCam(targetCam)
+    setStreamKey(Date.now())
+    setStreamLoading(true)
 
-  const handleStartDetection = async () => { if (activeCam) { await api.post(`/api/cameras/${activeCam.id}/detection/start`); loadCameras() } }
-  const handleStopDetection = async () => { if (activeCam) { await api.post(`/api/cameras/${activeCam.id}/detection/stop`); loadCameras() } }
+    try {
+      // Focus 100% CPU on the active camera by stopping previous background cameras
+      await api.post(`/api/cameras/${targetCam.id}/detection/switch`)
+      await loadCameras()
+    } catch (e) {
+      console.error("Auto-play on camera switch failed", e)
+    } finally {
+      setStreamLoading(false)
+    }
+  }, [cameras, loadCameras])
+
+  const [streamLoading, setStreamLoading] = useState(false)
+
+  const handleStartDetection = async () => {
+    if (activeCam && !streamLoading) {
+      setStreamLoading(true)
+      try {
+        await api.post(`/api/cameras/${activeCam.id}/detection/start`)
+        await loadCameras()
+      } catch (e) {
+        console.error("Start detection failed", e)
+      } finally {
+        setStreamLoading(false)
+      }
+    }
+  }
+
+  const handleStopDetection = async () => {
+    if (activeCam && !streamLoading) {
+      setStreamLoading(true)
+      try {
+        await api.post(`/api/cameras/${activeCam.id}/detection/stop`)
+        await loadCameras()
+      } catch (e) {
+        console.error("Stop detection failed", e)
+      } finally {
+        setStreamLoading(false)
+      }
+    }
+  }
 
   const handleSaveSettings = async (newSettings) => {
     await api.put('/api/settings', newSettings)
@@ -283,9 +363,18 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar currentPage={page} onNavigate={setPage} sysInfo={sysInfo} />
+      <Sidebar
+        currentPage={page}
+        onNavigate={setPage}
+        sysInfo={sysInfo}
+        collapsed={sidebarCollapsed}
+        onToggle={handleToggleSidebar}
+      />
       <main className="main-area">
-        <TopBar />
+        <TopBar
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={handleToggleSidebar}
+        />
         <PageComponent
           cameras={cameras}
           activeCam={activeCam}
@@ -295,6 +384,7 @@ export default function App() {
           onCamSwitch={handleCamSwitch}
           onStart={handleStartDetection}
           onStop={handleStopDetection}
+          streamLoading={streamLoading}
           onSaveSettings={handleSaveSettings}
           onSaveConfig={handleSaveConfig}
           onRefreshEvents={refreshEvents}

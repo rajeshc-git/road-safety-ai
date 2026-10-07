@@ -19,4 +19,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  preview: {
+    port: 3000,
+    host: true,
+    allowedHosts: ['cooper-ment-jeans-passes.trycloudflare.com', 'localhost', '127.0.0.1'],
+    proxy: {
+      '/api': backendTarget,
+      '/ws': { target: backendWsTarget, ws: true },
+    },
+  },
 })
+

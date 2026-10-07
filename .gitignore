@@ -4,9 +4,14 @@
 **/*.pyo
 **/*.pyd
 
-# Local Database & Snapshots
+# Local Database & Snapshots & Storage
 data/safety_stop.db
+backend/*.db
+*.db
 data/snapshots/
+data/minio/
+data/redis/
+.venv/
 
 # Node environment
 frontend/node_modules/

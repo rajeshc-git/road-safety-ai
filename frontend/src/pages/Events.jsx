@@ -334,6 +334,117 @@ function ImageModal({ preview, onClose }) {
   )
 }
 
+/* ─────────────────────────── BULK DELETE REALTIME PROGRESS MODAL ─────────────────────────── */
+function BulkDeleteProgressModal({ progress }) {
+  if (!progress || !progress.active) return null;
+  const isDone = progress.done;
+
+  return (
+    <div className="modal-overlay" style={{
+      zIndex: 10001,
+      background: 'rgba(8, 12, 21, 0.82)',
+      backdropFilter: 'blur(10px)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }}>
+      <div className="modal" style={{
+        maxWidth: '460px',
+        width: '92%',
+        background: 'linear-gradient(180deg, #131b2e 0%, #0c121e 100%)',
+        border: '1px solid rgba(239, 68, 68, 0.35)',
+        boxShadow: '0 25px 65px rgba(0, 0, 0, 0.7), 0 0 30px rgba(239, 68, 68, 0.15)',
+        borderRadius: '12px',
+        overflow: 'hidden',
+        padding: '24px'
+      }}>
+        {/* Header Icon & Title */}
+        <div style={{ textAlign: 'center', marginBottom: '18px' }}>
+          {isDone ? (
+            <div style={{
+              width: '56px', height: '56px', borderRadius: '50%',
+              background: 'rgba(16, 185, 129, 0.15)', border: '1px solid rgba(16, 185, 129, 0.4)',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              marginBottom: '12px', animation: 'pulse 1.5s infinite'
+            }}>
+              <i className="fa-solid fa-check" style={{ color: '#10b981', fontSize: '24px' }} />
+            </div>
+          ) : (
+            <div style={{
+              width: '56px', height: '56px', borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              marginBottom: '12px'
+            }}>
+              <i className="fa-solid fa-trash-can fa-bounce" style={{ color: '#ef4444', fontSize: '22px' }} />
+            </div>
+          )}
+          <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--t1)', letterSpacing: '0.3px' }}>
+            {isDone ? 'Bulk Purge Complete!' : 'Purging Violation Records...'}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--t2)', marginTop: '4px' }}>
+            {isDone ? `Successfully purged ${progress.total} event records and snapshots` : 'Real-time database index & evidence snapshot cleanup'}
+          </div>
+        </div>
+
+        {/* Real-time Glowing Progress Bar */}
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', fontWeight: '600', color: 'var(--t1)', marginBottom: '6px' }}>
+            <span>Progress ({progress.processed} / {progress.total})</span>
+            <span style={{ color: isDone ? '#10b981' : '#ef4444', fontWeight: '700' }}>{progress.percent}%</span>
+          </div>
+          <div style={{
+            height: '10px',
+            background: 'rgba(255, 255, 255, 0.06)',
+            borderRadius: '10px',
+            overflow: 'hidden',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            position: 'relative'
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${progress.percent}%`,
+              background: isDone
+                ? 'linear-gradient(90deg, #059669, #10b981)'
+                : 'linear-gradient(90deg, #dc2626, #ef4444, #f87171)',
+              borderRadius: '10px',
+              transition: 'width 0.15s cubic-bezier(0.4, 0, 0.2, 1)',
+              boxShadow: isDone
+                ? '0 0 12px rgba(16, 185, 129, 0.6)'
+                : '0 0 12px rgba(239, 68, 68, 0.6)'
+            }} />
+          </div>
+        </div>
+
+        {/* Live Accurate Metrics Grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: '8px',
+          background: 'rgba(0, 0, 0, 0.25)',
+          padding: '12px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.05)',
+          fontSize: '10.5px'
+        }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ color: 'var(--t3)', fontSize: '9.5px', marginBottom: '2px' }}>ELAPSED</div>
+            <div style={{ color: 'var(--t1)', fontWeight: '700', fontFamily: "'Courier New', monospace" }}>{progress.elapsed}</div>
+          </div>
+          <div style={{ textAlign: 'center', borderLeft: '1px solid rgba(255, 255, 255, 0.08)', borderRight: '1px solid rgba(255, 255, 255, 0.08)' }}>
+            <div style={{ color: 'var(--t3)', fontSize: '9.5px', marginBottom: '2px' }}>THROUGHPUT</div>
+            <div style={{ color: '#38bdf8', fontWeight: '700', fontFamily: "'Courier New', monospace" }}>{progress.speed}</div>
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ color: 'var(--t3)', fontSize: '9.5px', marginBottom: '2px' }}>EST. REMAINING</div>
+            <div style={{ color: isDone ? '#10b981' : '#f59e0b', fontWeight: '700', fontFamily: "'Courier New', monospace" }}>{progress.eta}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ─────────────────────────── CONFIRM MODAL ─────────────────────────── */
 function ConfirmModal({ message, onConfirm, onCancel }) {
   if (!message) return null;
@@ -381,6 +492,7 @@ export default function EventsPage({ cameras, eventTrigger }) {
   const [selectAllAvailable, setSelectAllAvailable] = useState(false)
   const [confirmMsg, setConfirmMsg] = useState(null)
   const [confirmAction, setConfirmAction] = useState(null)
+  const [progressState, setProgressState] = useState(null)
 
   const loadEvents = async () => {
     try {
@@ -445,25 +557,100 @@ export default function EventsPage({ cameras, eventTrigger }) {
     loadEvents()
   }
 
-  const deleteSelected = async () => {
-    if (selectAllAvailable) {
-      // Delete ALL matching events
-      await api.del('/api/events')
-    } else {
-      await api.post('/api/events/bulk-delete', { ids: [...selected] })
+  const executeBulkDelete = async (targetIds) => {
+    if (!targetIds || targetIds.length === 0) return
+    const totalCount = targetIds.length
+    const startTime = performance.now()
+
+    setProgressState({
+      active: true,
+      total: totalCount,
+      processed: 0,
+      percent: 0,
+      elapsed: '0.0s',
+      eta: 'Calculating...',
+      speed: '0 items/s',
+      done: false
+    })
+
+    const BATCH_SIZE = 15
+    let processedCount = 0
+
+    for (let i = 0; i < totalCount; i += BATCH_SIZE) {
+      const chunk = targetIds.slice(i, i + BATCH_SIZE)
+      try {
+        await api.post('/api/events/bulk-delete', { ids: chunk })
+      } catch (err) {
+        console.error("Bulk delete chunk failed", err)
+      }
+
+      processedCount += chunk.length
+      const now = performance.now()
+      const elapsedSec = (now - startTime) / 1000
+      const speed = processedCount / Math.max(0.05, elapsedSec)
+      const remainingItems = totalCount - processedCount
+      const etaSec = speed > 0 ? (remainingItems / speed) : 0
+      const percent = Math.min(100, Math.round((processedCount / totalCount) * 100))
+
+      setProgressState({
+        active: true,
+        total: totalCount,
+        processed: processedCount,
+        percent: percent,
+        elapsed: `${elapsedSec.toFixed(1)}s`,
+        eta: remainingItems <= 0 ? '0.0s' : `${etaSec.toFixed(1)}s`,
+        speed: `${Math.round(speed)} items/s`,
+        done: processedCount >= totalCount
+      })
     }
-    setSelected(new Set())
-    setSelectAllAvailable(false)
-    setPage(1)
-    loadEvents()
+
+    // Auto-dismiss smoothly on completion
+    setTimeout(() => {
+      setProgressState(null)
+      setSelected(new Set())
+      setSelectAllAvailable(false)
+      setPage(1)
+      loadEvents()
+    }, 600)
+  }
+
+  const deleteSelected = async () => {
+    let targetIds = []
+    if (selectAllAvailable) {
+      try {
+        let url = '/api/events/ids?'
+        if (camFilter !== 'all') url += `&camera_id=${camFilter}`
+        if (statFilter !== 'all') url += `&status=${statFilter}`
+        if (categoryFilter !== 'all') url += `&event_category=${categoryFilter}`
+        if (dateFrom) url += `&date_from=${dateFrom}`
+        if (dateTo) url += `&date_to=${dateTo}`
+        const res = await api.get(url)
+        targetIds = res.ids || []
+      } catch {
+        targetIds = [...selected]
+      }
+    } else {
+      targetIds = [...selected]
+    }
+    executeBulkDelete(targetIds)
   }
 
   const deleteAllEvents = async () => {
-    await api.del('/api/events')
-    setSelected(new Set())
-    setSelectAllAvailable(false)
-    setPage(1)
-    loadEvents()
+    let targetIds = []
+    try {
+      const res = await api.get('/api/events/ids')
+      targetIds = res.ids || []
+    } catch {}
+
+    if (targetIds.length > 0) {
+      executeBulkDelete(targetIds)
+    } else {
+      await api.del('/api/events')
+      setSelected(new Set())
+      setSelectAllAvailable(false)
+      setPage(1)
+      loadEvents()
+    }
   }
 
   // Confirm wrappers
@@ -844,6 +1031,9 @@ export default function EventsPage({ cameras, eventTrigger }) {
 
       {/* Confirm delete modal */}
       <ConfirmModal message={confirmMsg} onConfirm={onConfirm} onCancel={onCancelConfirm} />
+
+      {/* Realtime bulk deletion progress modal */}
+      <BulkDeleteProgressModal progress={progressState} />
     </div>
   )
 }

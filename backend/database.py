@@ -239,6 +239,36 @@ async def get_events(
     }
 
 
+async def get_event_ids(
+    camera_id: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    event_category: Optional[str] = None,
+) -> List[int]:
+    conditions, params = [], []
+    if camera_id:
+        conditions.append("camera_id=?"); params.append(camera_id)
+    if status and status not in ("All Status", "all"):
+        conditions.append("status=?"); params.append(status)
+    if date_from:
+        conditions.append("timestamp>=?"); params.append(date_from)
+    if date_to:
+        conditions.append("timestamp<=?"); params.append(date_to + " 23:59:59")
+        
+    if event_category == "traffic":
+        conditions.append("event_type IN ('Did Not Stop', 'Did Not Stop (Pedestrian Crossing)')")
+    elif event_category == "dms":
+        conditions.append("event_type NOT IN ('Did Not Stop', 'Did Not Stop (Pedestrian Crossing)')")
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(f"SELECT id FROM events {where} ORDER BY timestamp DESC", params) as cur:
+            rows = await cur.fetchall()
+            return [r[0] for r in rows]
+
+
 async def get_event_stats() -> Dict:
     today = datetime.now().strftime("%Y-%m-%d")
     week_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -277,13 +307,22 @@ async def update_event_status(event_id: int, status: str):
 async def delete_event(event_id: int):
     """Delete a single event and its snapshot file."""
     from config import SNAPSHOTS_DIR
+    import minio_service
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT snapshot_path FROM events WHERE id=?", (event_id,)) as cur:
+        async with db.execute("SELECT snapshot_path, metadata_json FROM events WHERE id=?", (event_id,)) as cur:
             row = await cur.fetchone()
         if row and row[0]:
             snap = SNAPSHOTS_DIR / Path(row[0]).name
             if snap.exists():
                 snap.unlink(missing_ok=True)
+            await minio_service.delete_snapshot(Path(row[0]).name)
+            if row[1]:
+                try:
+                    meta = json.loads(row[1])
+                    if meta.get("crop_path"):
+                        await minio_service.delete_snapshot(Path(meta["crop_path"]).name)
+                except Exception:
+                    pass
         await db.execute("DELETE FROM events WHERE id=?", (event_id,))
         await db.commit()
 
@@ -291,17 +330,26 @@ async def delete_event(event_id: int):
 async def delete_events_bulk(ids: list):
     """Delete multiple events by a list of IDs."""
     from config import SNAPSHOTS_DIR
+    import minio_service
     if not ids:
         return
     placeholders = ",".join("?" for _ in ids)
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(f"SELECT snapshot_path FROM events WHERE id IN ({placeholders})", ids) as cur:
+        async with db.execute(f"SELECT snapshot_path, metadata_json FROM events WHERE id IN ({placeholders})", ids) as cur:
             rows = await cur.fetchall()
         for row in rows:
             if row[0]:
                 snap = SNAPSHOTS_DIR / Path(row[0]).name
                 if snap.exists():
                     snap.unlink(missing_ok=True)
+                await minio_service.delete_snapshot(Path(row[0]).name)
+                if row[1]:
+                    try:
+                        meta = json.loads(row[1])
+                        if meta.get("crop_path"):
+                            await minio_service.delete_snapshot(Path(meta["crop_path"]).name)
+                    except Exception:
+                        pass
         await db.execute(f"DELETE FROM events WHERE id IN ({placeholders})", ids)
         await db.commit()
 
@@ -309,10 +357,15 @@ async def delete_events_bulk(ids: list):
 async def delete_all_events() -> int:
     """Delete ALL events and clean up all snapshot files."""
     from config import SNAPSHOTS_DIR
-    import os
+    import minio_service
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM events") as cur:
             count = (await cur.fetchone())[0]
+        async with db.execute("SELECT snapshot_path FROM events") as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            if row[0]:
+                await minio_service.delete_snapshot(Path(row[0]).name)
         await db.execute("DELETE FROM events")
         await db.commit()
     # Clean snapshots directory

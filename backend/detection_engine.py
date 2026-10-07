@@ -3,6 +3,11 @@ Safety Stop AI — Detection Engine
 Per-camera YOLO detection + ByteTrack tracking in a background thread.
 """
 
+import os
+os.environ["GLOG_minloglevel"] = "3"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["FLAGS_stderrthreshold"] = "3"
+
 import threading
 import time
 from collections import defaultdict, deque
@@ -113,9 +118,224 @@ class TrackHistory:
             dx = self.positions[-i][0] - self.positions[-i-1][0]
             dy = self.positions[-i][1] - self.positions[-i-1][1]
             dt = self.timestamps[-i] - self.timestamps[-i-1]
-            if dt > 0:
-                displacements.append(((dx**2 + dy**2) ** 0.5) / dt)
         return sum(displacements) / len(displacements) if displacements else 0.0
+
+
+class ThreadedCameraCapture:
+    """Ultra-low latency, zero-buffer-lag threaded video capturer.
+    
+    Specifically optimized for RTSP IP cameras, HTTP/HLS streams, and USB webcams.
+    Features:
+    - Multi-transport fallback (RTSP TCP/UDP + standard FFmpeg fallback)
+    - Non-blocking background thread continuously draining frames to prevent OpenCV buffer buildup and lag
+    - Instant frame retrieval for AI inference & MJPEG pipelines (zero lag)
+    - Automatic stream health monitoring and background reconnection
+    """
+    def __init__(self, source, target_fps=30):
+        self.raw_source = source
+        self.src = int(source) if str(source).isdigit() else str(source).strip()
+        self.is_pure_rtsp = isinstance(self.src, str) and (
+            self.src.startswith("rtsp://") or self.src.startswith("rtsps://")
+        )
+        self.is_network = isinstance(self.src, str) and (
+            self.is_pure_rtsp or
+            self.src.startswith("http://") or 
+            self.src.startswith("https://") or 
+            self.src.startswith("rtmp://")
+        )
+        self.is_rtsp = self.is_network
+        self.is_file = isinstance(self.src, str) and not self.is_network
+        self.target_fps = target_fps
+        
+        self.cap: Optional[cv.VideoCapture] = None
+        self.grabbed = False
+        self.frame = None
+        self.stopped = False
+        self.lock = threading.Lock()
+        self.cap_lock = threading.Lock()
+        self.new_frame_event = threading.Event()
+        self.width = 1920
+        self.height = 1080
+        self.fps = 25
+        self.thread: Optional[threading.Thread] = None
+        
+        # Open capture device
+        self._init_capture()
+
+    def _open_device(self, mode="optimized"):
+        if not self.is_network:
+            return cv.VideoCapture(self.src)
+
+        if mode == "optimized":
+            if self.is_pure_rtsp:
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                    "rtsp_transport;tcp;udp|fflags;nobuffer|flags;low_delay|max_delay;500000"
+                )
+            else:
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay"
+        else:
+            # Fallback mode: clear custom capture options
+            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+
+        try:
+            cap = cv.VideoCapture(self.src, cv.CAP_FFMPEG)
+            if cap and cap.isOpened():
+                try:
+                    cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                return cap
+        except Exception:
+            pass
+
+        try:
+            cap = cv.VideoCapture(self.src)
+            if cap and cap.isOpened():
+                try:
+                    cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                return cap
+        except Exception:
+            pass
+
+        return None
+
+    def _init_capture(self):
+        # Attempt 1: Optimized low-latency open
+        cap = self._open_device(mode="optimized")
+        
+        # Attempt 2: Fallback standard open if optimized failed
+        if not cap or not cap.isOpened():
+            if cap:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            cap = self._open_device(mode="fallback")
+
+        # Retry loop for network streams (give slow RTSP servers up to 2 seconds for initial handshake)
+        if self.is_network and (not cap or not cap.isOpened()):
+            for _ in range(4):
+                time.sleep(0.4)
+                cap = self._open_device(mode="fallback")
+                if cap and cap.isOpened():
+                    break
+
+        self.cap = cap
+        if self.cap and self.cap.isOpened():
+            try:
+                self.grabbed, self.frame = self.cap.read()
+                w = int(self.cap.get(cv.CAP_PROP_FRAME_WIDTH))
+                h = int(self.cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+                f = self.cap.get(cv.CAP_PROP_FPS)
+                if w > 0: self.width = w
+                if h > 0: self.height = h
+                if f and 0 < f <= 120: self.fps = f
+            except Exception:
+                pass
+
+            # Start worker thread for continuous frame draining
+            if self.is_network:
+                self.thread = threading.Thread(
+                    target=self._worker, 
+                    daemon=True, 
+                    name=f"net-grabber-{self.raw_source}"
+                )
+                self.thread.start()
+
+    def is_opened(self):
+        with self.cap_lock:
+            return self.cap is not None and self.cap.isOpened()
+
+    def _worker(self):
+        consecutive_fails = 0
+        while not self.stopped:
+            if not self.cap or not self.cap.isOpened():
+                time.sleep(0.3)
+                if self.stopped:
+                    break
+                with self.cap_lock:
+                    if self.stopped:
+                        break
+                    cap = self._open_device(mode="fallback")
+                    if cap and cap.isOpened():
+                        self.cap = cap
+                        consecutive_fails = 0
+                continue
+
+            try:
+                with self.cap_lock:
+                    if self.stopped or not self.cap:
+                        break
+                    grabbed, frame = self.cap.read()
+            except Exception:
+                grabbed, frame = False, None
+
+            if grabbed and frame is not None and frame.size > 0:
+                consecutive_fails = 0
+                with self.lock:
+                    self.frame = frame
+                    self.grabbed = True
+                self.new_frame_event.set()
+                time.sleep(0.002)
+            else:
+                consecutive_fails += 1
+                if consecutive_fails > 80:  # ~2 seconds of missed frames
+                    with self.cap_lock:
+                        try:
+                            if self.cap:
+                                self.cap.release()
+                        except Exception:
+                            pass
+                        self.cap = None
+                    time.sleep(1.0)
+                else:
+                    time.sleep(0.01)
+
+    def read(self):
+        if self.stopped:
+            return False, None
+        if self.is_network:
+            with self.lock:
+                if self.frame is not None:
+                    return self.grabbed, self.frame.copy()
+            # If frame not captured yet, wait briefly for grabber thread
+            if self.new_frame_event.wait(timeout=0.3):
+                with self.lock:
+                    if self.frame is not None:
+                        return self.grabbed, self.frame.copy()
+            return False, None
+        else:
+            with self.cap_lock:
+                if self.stopped or not self.cap or not self.cap.isOpened():
+                    return False, None
+                try:
+                    ret, frame = self.cap.read()
+                except Exception:
+                    return False, None
+                if not ret and self.is_file and not self.stopped:
+                    try:
+                        self.cap.set(cv.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = self.cap.read()
+                        if not ret and not self.stopped:
+                            self.cap.release()
+                            self.cap = cv.VideoCapture(self.src)
+                            ret, frame = self.cap.read()
+                    except Exception:
+                        return False, None
+                return ret, frame
+
+    def release(self):
+        self.stopped = True
+        self.new_frame_event.set()
+        with self.cap_lock:
+            if self.cap:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
 
 
 class CameraStream:
@@ -129,6 +349,7 @@ class CameraStream:
         self.config       = config or {}
         self._stop_event  = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self.reader: Optional[ThreadedCameraCapture] = None
         self._lock        = threading.Lock()
         self.model        = get_model()
         self.dms_model    = get_dms_model() if (config or {}).get("mode") == "driver" else None
@@ -142,6 +363,7 @@ class CameraStream:
         self.detection_on = True
         self.tracking_on  = True
         self._latest_frame: Optional[bytes] = None  # for MJPEG streaming
+        self._latest_annotated_frame: Optional[np.ndarray] = None  # for WebRTC streaming
         self.dms_state = {
             "eye_closed_start": None,
             "yawn_start": None,
@@ -257,20 +479,42 @@ class CameraStream:
     def stop(self):
         self._stop_event.set()
         self.is_running = False
-        def wait_and_clear():
-            if self._thread:
-                self._thread.join(timeout=2)
-        threading.Thread(target=wait_and_clear, daemon=True).start()
+        reader = self.reader
+        if reader is not None:
+            try:
+                reader.release()
+            except Exception:
+                pass
+        target_thread = self._thread
+        if target_thread and target_thread.is_alive():
+            def wait_and_clear():
+                try:
+                    target_thread.join(timeout=0.6)
+                except Exception:
+                    pass
+            threading.Thread(target=wait_and_clear, daemon=True).start()
 
     def _run(self):
-        src = int(self.source) if str(self.source).isdigit() else self.source
-        cap = cv.VideoCapture(src)
-        if not cap.isOpened():
+        reader = ThreadedCameraCapture(self.source, target_fps=self.target_fps)
+        self.reader = reader
+        if not reader.is_opened():
+            for _ in range(6):
+                if self._stop_event.is_set():
+                    reader.release()
+                    return
+                time.sleep(0.5)
+                if reader.is_opened():
+                    break
+
+        if not reader.is_opened():
+            print(f"  [CAM {self.camera_id}] ❌ Failed to connect to stream source: {self.source}")
+            reader.release()
             return
+
         self.is_running = True
-        width  = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-        cam_fps = cap.get(cv.CAP_PROP_FPS) or 25
+        width  = reader.width
+        height = reader.height
+        cam_fps = reader.fps
         self.frame_size = (width, height)
         self.tracker = sv.ByteTrack(frame_rate=int(cam_fps))
 
@@ -382,147 +626,153 @@ class CameraStream:
                 import traceback; traceback.print_exc()
                 print(f"  [CAM {self.camera_id}] ❌ Error loading MediaPipe: {e}")
 
-        while not self._stop_event.is_set():
-            now = time.time()
-            
-            # Dynamic lazy throttling: run at target_fps if actively watched, otherwise drop to a power-saving 10 FPS
-            current_target = self.target_fps if getattr(self, "has_subscribers", False) else min(10, self.target_fps)
-            frame_interval = 1.0 / max(1, current_target)
+        try:
+            while not self._stop_event.is_set():
+                loop_start = time.time()
 
-            elapsed = now - last_frame_time
-            if elapsed < frame_interval:
-                sleep_time = frame_interval - elapsed
-                if sleep_time > 0.001:
-                    is_live = not (isinstance(src, str) and not src.isdigit())
-                    if is_live:
-                        # For live streams, sleep a short duration to yield CPU but wake up often enough to read and clear buffers
-                        time.sleep(min(sleep_time, 0.02))
-                    else:
-                        # For video files, sleep the entire duration for maximum power saving
-                        time.sleep(sleep_time)
-                continue
+                if self._stop_event.is_set():
+                    break
+                ret, frame = reader.read()
+                if self._stop_event.is_set():
+                    break
+                if not ret or frame is None:
+                    time.sleep(0.01)
+                    continue
 
-            ret, frame = cap.read()
-            if not ret:
-                # If it's a local video file, let's rewind and loop automatically for seamless testing!
-                if isinstance(src, str) and not src.isdigit():
-                    cap.set(cv.CAP_PROP_POS_FRAMES, 0)
+                # Power-saver: If no active viewers are watching this camera stream, throttle to save CPU
+                if not getattr(self, "has_subscribers", False):
                     time.sleep(0.15)
-                    last_frame_time = time.time()
-                    continue
-                else:
-                    time.sleep(0.05)
                     continue
             
-            last_frame_time = time.time()
-            annotated = frame.copy()
+                annotated = frame.copy()
 
-            if self.detection_on:
-                try:
-                    if self.camera_mode == "driver":
-                        self._process_dms(frame, annotated, device, face_mesh)
-                    else:
-                        self.dms_state["yolo_traffic_count"] = self.dms_state.get("yolo_traffic_count", 0) + 1
-                        is_inference_frame = (self.dms_state["yolo_traffic_count"] % 3 == 0 or 
-                                              "last_traffic_detections" not in self.dms_state)
-
-                        if is_inference_frame:
-                            use_half = isinstance(device, int) or (isinstance(device, str) and "cuda" in device.lower())
-                            # Blazing-fast inference downsampling: imgsz=416 (imgsz=384 for CPU fallback)
-                            img_sz = 384 if device == "cpu" else 416
-                            results = self.model(frame, conf=self.confidence, imgsz=img_sz, half=use_half, device=device, verbose=False)[0]
-                            detections = sv.Detections.from_ultralytics(results)
-
-                            if self.tracking_on:
-                                detections = self.tracker.update_with_detections(detections)
-                                detections = self.smoother.update_with_detections(detections)
-                            self.dms_state["last_traffic_detections"] = detections
+                if self.detection_on:
+                    try:
+                        if self.camera_mode == "driver":
+                            self._process_dms(frame, annotated, device, face_mesh)
                         else:
-                            # Re-use tracking coordinates from the last inference frame to maintain seamless visual tracking at 0 computing cost!
-                            detections = self.dms_state["last_traffic_detections"]
+                            self.dms_state["yolo_traffic_count"] = self.dms_state.get("yolo_traffic_count", 0) + 1
+                            is_inference_frame = (self.dms_state["yolo_traffic_count"] % 3 == 0 or 
+                                                  "last_traffic_detections" not in self.dms_state)
 
-                        veh_mask = np.isin(detections.class_id, self.vehicle_ids)
-                        ped_mask = np.isin(detections.class_id, self.person_ids)
-                        veh_dets = detections[veh_mask]
-                        ped_dets = detections[ped_mask]
+                            if is_inference_frame:
+                                use_half = isinstance(device, int) or (isinstance(device, str) and "cuda" in device.lower())
+                                # Blazing-fast inference downsampling: imgsz=416 (imgsz=384 for CPU fallback)
+                                img_sz = 384 if device == "cpu" else 416
+                                with _model_lock:
+                                    results = self.model(frame, conf=self.confidence, imgsz=img_sz, half=use_half, device=device, verbose=False)[0]
+                                detections = sv.Detections.from_ultralytics(results)
 
-                        if veh_dets.tracker_id is not None and is_inference_frame:
-                            for tid, bottom_center in zip(
-                                veh_dets.tracker_id,
-                                veh_dets.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)):
-                                self.track_history[tid].update(*bottom_center)
+                                if self.tracking_on:
+                                    detections = self.tracker.update_with_detections(detections)
+                                    detections = self.smoother.update_with_detections(detections)
+                                self.dms_state["last_traffic_detections"] = detections
+                            else:
+                                # Re-use tracking coordinates from the last inference frame to maintain seamless visual tracking at 0 computing cost!
+                                detections = self.dms_state.get("last_traffic_detections")
 
-                        if veh_dets.tracker_id is not None and len(veh_dets) > 0:
-                            labels = []
-                            for tid, cid in zip(veh_dets.tracker_id, veh_dets.class_id):
-                                hist = self.track_history.get(tid)
-                                if hist and getattr(hist, "has_stopped", False):
-                                    labels.append(f"#{tid} {self.model.names[int(cid)]} [STOPPED]")
-                                else:
-                                    labels.append(f"#{tid} {self.model.names[int(cid)]}")
-                            box_ann.annotate(annotated, veh_dets)
-                            label_ann.annotate(annotated, veh_dets, labels)
+                            if detections is not None:
+                                veh_mask = np.isin(detections.class_id, self.vehicle_ids)
+                                ped_mask = np.isin(detections.class_id, self.person_ids)
+                                veh_dets = detections[veh_mask]
+                                ped_dets = detections[ped_mask]
 
-                            # Overlay bright green highlight for compliant stopped vehicles
-                            for tid, box in zip(veh_dets.tracker_id, veh_dets.xyxy):
-                                hist = self.track_history.get(tid)
-                                if hist and getattr(hist, "has_stopped", False):
-                                    x1, y1, x2, y2 = map(int, box)
-                                    cv.rectangle(annotated, (x1, y1), (x2, y2), (0, 220, 60), 3)
-                                    cv.rectangle(annotated, (x1, y1 - 25), (x1 + 175, y1), (0, 220, 60), cv.FILLED)
-                                    cv.putText(annotated, "STOPPED (COMPLIANT)", (x1 + 5, y1 - 8),
-                                               cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
+                                if veh_dets.tracker_id is not None and is_inference_frame:
+                                    for tid, bottom_center in zip(
+                                        veh_dets.tracker_id,
+                                        veh_dets.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)):
+                                        self.track_history[tid].update(*bottom_center)
 
-                        if len(ped_dets) > 0:
-                            for box in ped_dets.xyxy:
-                                x1, y1, x2, y2 = map(int, box)
-                                cv.rectangle(annotated, (x1, y1), (x2, y2), (255, 120, 0), thickness)
-                                cv.putText(annotated, "Person", (x1, y1 - 6),
-                                           cv.FONT_HERSHEY_SIMPLEX, text_scale, (255, 120, 0), thickness)
+                                if veh_dets.tracker_id is not None and len(veh_dets) > 0:
+                                    labels = []
+                                    for tid, cid in zip(veh_dets.tracker_id, veh_dets.class_id):
+                                        hist = self.track_history.get(tid)
+                                        if hist and getattr(hist, "has_stopped", False):
+                                            labels.append(f"#{tid} {self.model.names[int(cid)]} [STOPPED]")
+                                        else:
+                                            labels.append(f"#{tid} {self.model.names[int(cid)]}")
+                                    box_ann.annotate(annotated, veh_dets)
+                                    label_ann.annotate(annotated, veh_dets, labels)
 
-                        # Check violations on every frame (not just inference frames) so zone enter/exit is never missed
-                        if len(self.stop_zones) > 0 and veh_dets.tracker_id is not None:
-                            self._check_violations(frame, annotated, veh_dets, ped_dets)
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
+                                    # Overlay bright green highlight for compliant stopped vehicles
+                                    for tid, box in zip(veh_dets.tracker_id, veh_dets.xyxy):
+                                        hist = self.track_history.get(tid)
+                                        if hist and getattr(hist, "has_stopped", False):
+                                            x1, y1, x2, y2 = map(int, box)
+                                            cv.rectangle(annotated, (x1, y1), (x2, y2), (0, 220, 60), 3)
+                                            cv.rectangle(annotated, (x1, y1 - 25), (x1 + 175, y1), (0, 220, 60), cv.FILLED)
+                                            cv.putText(annotated, "STOPPED (COMPLIANT)", (x1 + 5, y1 - 8),
+                                                       cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
 
-            if self.camera_mode != "driver":
-                self._draw_stop_zones(annotated)
+                                if len(ped_dets) > 0:
+                                    for box in ped_dets.xyxy:
+                                        x1, y1, x2, y2 = map(int, box)
+                                        cv.rectangle(annotated, (x1, y1), (x2, y2), (255, 120, 0), thickness)
+                                        cv.putText(annotated, "Person", (x1, y1 - 6),
+                                                   cv.FONT_HERSHEY_SIMPLEX, text_scale, (255, 120, 0), thickness)
 
-            # Skip expensive JPEG compression completely if no active viewers are streaming!
-            if getattr(self, "has_subscribers", False):
+                                # Check violations on every frame (not just inference frames) so zone enter/exit is never missed
+                                if len(self.stop_zones) > 0 and veh_dets.tracker_id is not None:
+                                    self._check_violations(frame, annotated, veh_dets, ped_dets)
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+
+                # Save latest annotated frame for WebRTC and MJPEG
+                self._latest_annotated_frame = annotated
                 ok, buf = cv.imencode(".jpg", annotated, [cv.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 if ok:
                     frame_bytes = buf.tobytes()
                     self._latest_frame = frame_bytes  # for MJPEG streaming
-                    self.on_frame(self.camera_id, frame_bytes, {
-                        "fps": round(self.fps_actual, 1),
-                        "width": width, "height": height,
-                        "detection": self.detection_on,
-                        "tracking": self.tracking_on,
-                        "camera_name": self.camera_name,
-                        "mode": self.camera_mode,
-                        "attention_score": round(self.dms_state.get("attention_score", 100.0), 1),
-                        "drowsiness_level": round(self.dms_state.get("drowsiness_level", 0.0), 1),
-                        "active_violations": list(self.dms_state.get("active_violations", [])) if self.camera_mode == "driver" else [],
-                    })
-            else:
-                self._latest_frame = None
+                    if getattr(self, "has_subscribers", False):
+                        self.on_frame(self.camera_id, frame_bytes, {
+                            "fps": round(self.fps_actual, 1),
+                            "width": width, "height": height,
+                            "detection": self.detection_on,
+                            "tracking": self.tracking_on,
+                            "camera_name": self.camera_name,
+                            "mode": self.camera_mode,
+                            "attention_score": round(self.dms_state.get("attention_score", 100.0), 1),
+                            "drowsiness_level": round(self.dms_state.get("drowsiness_level", 0.0), 1),
+                            "active_violations": list(self.dms_state.get("active_violations", [])) if self.camera_mode == "driver" else [],
+                        })
 
-            fps_counter += 1
-            if now - fps_timer >= 1.0:
-                self.fps_actual = fps_counter / (now - fps_timer)
-                fps_counter = 0
-                fps_timer = now
+                fps_counter += 1
+                now = time.time()
+                if now - fps_timer >= 1.0:
+                    self.fps_actual = fps_counter / (now - fps_timer)
+                    fps_counter = 0
+                    fps_timer = now
 
-        cap.release()
-        if face_mesh is not None:
+                # Pacing: maintain target FPS smoothly without compounding inference delays
+                target_fps = self.target_fps
+                frame_interval = 1.0 / max(1, target_fps)
+                elapsed = time.time() - loop_start
+                sleep_needed = frame_interval - elapsed
+                if reader.is_rtsp:
+                    # RTSP IP cameras push frames in real time; yield minimally to keep CPU optimal
+                    if sleep_needed > 0:
+                        time.sleep(min(sleep_needed, 0.005))
+                    else:
+                        time.sleep(0.001)
+                else:
+                    if sleep_needed > 0.002:
+                        time.sleep(sleep_needed)
+                    else:
+                        time.sleep(0.001)
+
+        finally:
+            self.is_running = False
             try:
-                face_mesh.close()
+                reader.release()
             except Exception:
                 pass
-        self.is_running = False
+            self.reader = None
+            if face_mesh is not None:
+                try:
+                    face_mesh.close()
+                except Exception:
+                    pass
 
     def _check_violations(self, raw_frame, annotated, veh_dets, ped_dets):
         """Zone-based stop compliance check.
@@ -1102,7 +1352,8 @@ class CameraStream:
                 if run_yolo:
                     self.dms_state["yolo_frame_count"] = self.dms_state.get("yolo_frame_count", 0) + 1
                     use_half = isinstance(device, int) or (isinstance(device, str) and "cuda" in device.lower())
-                    results_yolo = self.dms_model(frame, conf=self.confidence, imgsz=320, half=use_half, device=device, verbose=False)[0]
+                    with _dms_model_lock:
+                        results_yolo = self.dms_model(frame, conf=self.confidence, imgsz=320, half=use_half, device=device, verbose=False)[0]
                     detections = sv.Detections.from_ultralytics(results_yolo)
                     
                     cached_boxes = []

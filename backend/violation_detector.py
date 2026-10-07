@@ -6,6 +6,7 @@ Handles snapshot saving and database insertion for violations.
 import asyncio
 import json
 import os
+import threading
 from datetime import datetime
 from typing import Tuple, Optional
 
@@ -15,6 +16,8 @@ import cv2 as cv
 from config import SNAPSHOTS_DIR
 from settings_loader import get_runtime_settings
 import database as db
+import minio_service
+import redis_service
 
 
 def _save_violation_images(snap_path: Optional[str], frame, crop_path: Optional[str], crop, quality: int):
@@ -26,32 +29,69 @@ def _save_violation_images(snap_path: Optional[str], frame, crop_path: Optional[
 
 
 _ocr_reader = None
+_ocr_backend = None
+_ocr_lock = threading.Lock()
+
 
 def get_ocr_reader():
-    """Lazy initializer for PaddleOCR reader to save startup memory/time."""
-    global _ocr_reader
-    if _ocr_reader is None:
-        import os
-        # Disable oneDNN to avoid instruction execution path bugs on CPU
-        os.environ["FLAGS_use_onednn"] = "0"
-        os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-        
-        # Import torch first on Windows to avoid DLL load order conflicts
-        # pyrefly: ignore [missing-import]
-        import torch
-        # pyrefly: ignore [missing-import]
-        from paddleocr import PaddleOCR
-        _ocr_reader = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
-    return _ocr_reader
+    """Lazy initializer supporting EasyOCR (default) or PaddleOCR."""
+    global _ocr_reader, _ocr_backend
+    with _ocr_lock:
+        if _ocr_reader is not None or _ocr_backend == "none":
+            return _ocr_reader, _ocr_backend
+
+        # 1. Try EasyOCR first (fast, PyTorch-integrated, native Python 3.13 support)
+        try:
+            # pyrefly: ignore [missing-import]
+            import torch
+            # Limit threads per OCR inference on CPU
+            if hasattr(torch, 'set_num_threads'):
+                try:
+                    torch.set_num_threads(2)
+                except Exception:
+                    pass
+            # pyrefly: ignore [missing-import]
+            import easyocr
+            use_gpu = torch.cuda.is_available()
+            _ocr_reader = easyocr.Reader(['en'], gpu=use_gpu)
+            _ocr_backend = "easyocr"
+            print(f"  [OCR] [OK] Loaded EasyOCR reader (GPU: {use_gpu})")
+            return _ocr_reader, _ocr_backend
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"  [OCR] EasyOCR init notice: {e}")
+
+        # 2. Try PaddleOCR fallback
+        try:
+            import os
+            os.environ["FLAGS_use_onednn"] = "0"
+            os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+            # pyrefly: ignore [missing-import]
+            import torch
+            # pyrefly: ignore [missing-import]
+            from paddleocr import PaddleOCR
+            _ocr_reader = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
+            _ocr_backend = "paddleocr"
+            print("  [OCR] [OK] Loaded PaddleOCR reader")
+            return _ocr_reader, _ocr_backend
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"  [OCR] PaddleOCR init notice: {e}")
+
+        print("  [OCR] [WARN] OCR reader not installed. License plate text recognition is bypassed.")
+        _ocr_backend = "none"
+        return None, "none"
 
 
-def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
+def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], Optional[Tuple[int, int, int, int]]]:
     """
     Extracts the license plate text (English only) from a vehicle crop.
     Optimized to search only the lower-middle region where plates are located.
     """
     if vehicle_crop is None or vehicle_crop.size == 0:
-        return None, None
+        return None, None, None
 
     try:
         h, w = vehicle_crop.shape[:2]
@@ -65,40 +105,52 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
         
         lower_portion = vehicle_crop[y_start:y_end, x_start:x_end]
         if lower_portion.size == 0:
-            return None, None
+            return None, None, None
 
-        reader = get_ocr_reader()
-        results = reader.ocr(lower_portion, cls=False)
+        reader, backend = get_ocr_reader()
+        if not reader:
+            return None, None, None
 
-        if not results or not results[0]:
-            return None, None
+        raw_detections = []
+        if backend == "easyocr":
+            results = reader.readtext(lower_portion)
+            for res in results:
+                if len(res) >= 3:
+                    bbox, text, conf = res[0], res[1], float(res[2])
+                    raw_detections.append((bbox, text, conf))
+        elif backend == "paddleocr":
+            results = reader.ocr(lower_portion, cls=False)
+            if results and results[0]:
+                for line in results[0]:
+                    bbox = line[0]
+                    text, conf = line[1][0], float(line[1][1])
+                    raw_detections.append((bbox, text, conf))
+
+        if not raw_detections:
+            return None, None, None
 
         # Filter strictly for standard ASCII letters and numbers (no Arabic or math symbols)
         def clean_to_ascii_alnum(text_str):
             cleaned = []
-            for char in text_str:
+            for char in str(text_str):
                 if ('A' <= char <= 'Z') or ('a' <= char <= 'z') or ('0' <= char <= '9'):
                     cleaned.append(char.upper())
                 elif char.isspace():
                     cleaned.append(' ')
-            # Join and collapse multiple spaces
             import re
             return re.sub(r'\s+', ' ', "".join(cleaned)).strip()
 
         # Evaluate each detected text line individually to prevent grille decals
-        # (e.g. model names, dealer text) from contaminating the plate text.
         candidates = []
-        for line in results[0]:
-            text = line[1][0]
-            conf = line[1][1]
-            if conf < 0.25:
+        for bbox, text, conf in raw_detections:
+            if conf < 0.20:
                 continue
             cleaned = clean_to_ascii_alnum(text)
             if not cleaned:
                 continue
                 
-            # Apply strict license plate validation heuristics on the individual segment:
-            # 1. Plate must contain at least one digit (to exclude pure text decals like brand names 'ISUZU')
+            # Apply strict license plate validation heuristics:
+            # 1. Plate must contain at least one digit
             # 2. Length must be between 3 and 12 characters
             # 3. Must not be a known vehicle brand name
             has_digit = any(c.isdigit() for c in cleaned)
@@ -106,7 +158,7 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
             is_brand = cleaned in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
             
             if has_digit and is_valid_len and not is_brand:
-                candidates.append((cleaned, conf, line[0]))
+                candidates.append((cleaned, conf, bbox))
 
         final_en = None
         coords = None
@@ -128,18 +180,17 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
             py2 = int(y_start + by2)
             coords = (px1, py1, px2, py2)
         else:
-            # Fallback to previous behavior (highest confidence line) if no line passed validation
-            best_line = max(results[0], key=lambda x: x[1][1])
-            final_en = clean_to_ascii_alnum(best_line[1][0])
+            # Fallback to highest confidence candidate if validation didn't match strictly
+            best_item = max(raw_detections, key=lambda x: x[2])
+            final_en = clean_to_ascii_alnum(best_item[1])
             
-            # Final validation check on fallback
             has_digit = any(c.isdigit() for c in final_en)
             is_valid_len = 3 <= len(final_en) <= 12
             is_brand = final_en in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
             if not has_digit or not is_valid_len or is_brand:
                 final_en = None
             else:
-                pts = best_line[0]
+                pts = best_item[0]
                 xs = [pt[0] for pt in pts]
                 ys = [pt[1] for pt in pts]
                 bx1, by1 = min(xs), min(ys)
@@ -151,7 +202,7 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str]]:
                 coords = (px1, py1, px2, py2)
 
         if final_en:
-            print(f"  [OCR] Detected plate — EN: '{final_en}'")
+            print(f"  [OCR] Detected plate - EN: '{final_en}'")
         else:
             print("  [OCR] No valid license plate detected (failed plate verification)")
 
@@ -247,17 +298,25 @@ async def handle_violation(
                 cv.rectangle(frame, (fx1, fy1 - 25), (fx1 + len(plate_en) * 14 + 10, fy1), (0, 220, 60), cv.FILLED)
                 cv.putText(frame, plate_en, (fx1 + 5, fy1 - 8), cv.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv.LINE_AA)
 
-        # Offload file writing and image compression to a background thread pool so it does not block the FastAPI main event loop!
+        # Offload file writing and image compression to local disk
         await asyncio.to_thread(_save_violation_images, snap_path, frame, crop_path, crop, quality)
 
-
+        # Upload snapshot and crop to MinIO Object Storage asynchronously
+        if filename:
+            ok, buf = cv.imencode(".jpg", frame, [cv.IMWRITE_JPEG_QUALITY, quality])
+            if ok:
+                await minio_service.upload_snapshot_bytes(filename, buf.tobytes())
+        if crop_filename and crop is not None and crop.size > 0:
+            ok, cbuf = cv.imencode(".jpg", crop, [cv.IMWRITE_JPEG_QUALITY, quality])
+            if ok:
+                await minio_service.upload_snapshot_bytes(crop_filename, cbuf.tobytes())
 
     if event_type == "Did Not Stop":
         resolved_event = "Did Not Stop (Pedestrian Crossing)" if pedestrian_involved else "Did Not Stop"
     else:
         resolved_event = event_type
 
-    await db.insert_event(
+    event_id = await db.insert_event(
         camera_id=camera_id,
         camera_name=camera_name,
         event_type=resolved_event,
@@ -274,4 +333,20 @@ async def handle_violation(
             "crossed_line_idx": crossed_line_idx,
         },
     )
+
+    # Publish violation to Redis Pub/Sub event bus
+    await redis_service.publish_violation({
+        "id": event_id,
+        "camera_id": camera_id,
+        "camera_name": camera_name,
+        "event_type": resolved_event,
+        "vehicle_id": vehicle_id if not is_dms else 0,
+        "snapshot_path": filename,
+        "crop_path": crop_filename,
+        "license_plate": plate_en,
+        "timestamp": ts.isoformat(),
+        "pedestrian_involved": pedestrian_involved,
+        "crossed_line_idx": crossed_line_idx,
+    })
+
 

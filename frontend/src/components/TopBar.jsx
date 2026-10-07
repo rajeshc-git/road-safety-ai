@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
 import './TopBar.css'
 
-export default function TopBar() {
+export default function TopBar({ sidebarCollapsed, onToggleSidebar }) {
   const [time, setTime] = useState('')
-  const [dropdownOpen, setDropdownOpen] = useState(false)
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark')
+  const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement)
 
   useEffect(() => {
     if (theme === 'light') {
@@ -14,6 +14,14 @@ export default function TopBar() {
     }
     localStorage.setItem('theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [])
 
   useEffect(() => {
     const tick = () => {
@@ -29,75 +37,60 @@ export default function TopBar() {
     return () => clearInterval(id)
   }, [])
 
-  useEffect(() => {
-    if (!dropdownOpen) return
-    const handleClose = () => setDropdownOpen(false)
-    window.addEventListener('click', handleClose)
-    return () => window.removeEventListener('click', handleClose)
-  }, [dropdownOpen])
-
   const toggleTheme = () => {
     setTheme(prev => (prev === 'light' ? 'dark' : 'light'))
+  }
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {})
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {})
+      }
+    }
   }
 
   return (
     <header className="topbar">
       <div className="tb-left">
-        <span className="det-pill">
-          <span className="det-dot" />
-          DETECTION RUNNING
-        </span>
+        {sidebarCollapsed && (
+          <button
+            className="tb-hamburger"
+            onClick={onToggleSidebar}
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
+          >
+            <i className="fa-solid fa-bars" />
+          </button>
+        )}
       </div>
-      <div className="tb-right" style={{ position: 'relative' }}>
+      <div className="tb-right">
         <span className="tb-clock">{time}</span>
-        <div className="tb-user" onClick={(e) => { e.stopPropagation(); setDropdownOpen(!dropdownOpen); }}>
+        <button
+          type="button"
+          className="tb-icon-btn"
+          onClick={toggleTheme}
+          title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+          aria-label="Toggle theme"
+        >
+          <i className={`fa-solid ${theme === 'light' ? 'fa-moon' : 'fa-sun'}`} />
+        </button>
+        <button
+          type="button"
+          className="tb-icon-btn"
+          onClick={toggleFullscreen}
+          title={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+          aria-label="Toggle full screen"
+        >
+          <i className={`fa-solid ${isFullscreen ? 'fa-compress' : 'fa-expand'}`} />
+        </button>
+        <div className="tb-user-static">
           <i className="fa-regular fa-circle-user" />
           <span>Admin</span>
-          <i className={`fa-solid ${dropdownOpen ? 'fa-chevron-up' : 'fa-chevron-down'}`} style={{ fontSize: 9 }} />
         </div>
-
-        {dropdownOpen && (
-          <div className="tb-dropdown" onClick={(e) => e.stopPropagation()} style={{
-            position: 'absolute',
-            top: '38px',
-            right: 0,
-            background: 'var(--panel)',
-            border: '1px solid var(--border2)',
-            borderRadius: '6px',
-            boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
-            padding: '8px',
-            zIndex: 1000,
-            minWidth: '150px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
-          }}>
-            <div style={{
-              fontSize: '10px',
-              fontWeight: '600',
-              color: 'var(--t2)',
-              borderBottom: '1px solid var(--border)',
-              paddingBottom: '4px',
-              marginBottom: '2px'
-            }}>
-              Control Panel
-            </div>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              fontSize: '11px',
-              color: 'var(--t1)',
-              cursor: 'pointer',
-              padding: '6px 8px',
-              borderRadius: '4px',
-              background: 'rgba(255,255,255,0.02)'
-            }} onClick={toggleTheme}>
-              <span>Theme: <b>{theme === 'light' ? 'Light' : 'Dark'}</b></span>
-              <i className={`fa-solid ${theme === 'light' ? 'fa-sun' : 'fa-moon'}`} style={{ color: theme === 'light' ? '#f59e0b' : '#3b82f6' }}/>
-            </div>
-          </div>
-        )}
       </div>
     </header>
   )

@@ -1,6 +1,29 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: safety-stop-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    restart: always
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: safety-stop-minio
+    command: server /data --console-address ":9001" --address ":9000"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+    volumes:
+      - ./data/minio:/data
+    restart: always
+
   backend:
     build:
       context: .
@@ -8,8 +31,21 @@ services:
     container_name: safety-stop-backend
     ports:
       - "8000:8000"
+    environment:
+      - REDIS_ENABLED=true
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENABLED=true
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - MINIO_SECURE=false
+      - MINIO_BUCKET=safety-violations
+      - WEBRTC_ENABLED=true
     volumes:
       - ./data:/app/data
+    depends_on:
+      - redis
+      - minio
     restart: always
 
   frontend:

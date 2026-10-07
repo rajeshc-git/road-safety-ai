@@ -1,0 +1,794 @@
+/* ══════════════════════════════════════════════════════════════════
+   SKEUOMORPHIC RETRO-FUTURISTIC HARDWARE PLAYER STYLES
+   Inspired by Winamp 3 Amber Titanium & Rich Mahogany Finishes
+   ══════════════════════════════════════════════════════════════════ */
+
+.player-skin-wrap.standard-skin {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ══ BASE SKEUOMORPHIC CHASSIS ══ */
+.skeuo-chassis {
+  width: 100%;
+  border-radius: 18px;
+  padding: 12px;
+  position: relative;
+  box-shadow: 
+    0 20px 45px rgba(0, 0, 0, 0.65),
+    inset 0 1px 2px rgba(255, 255, 255, 0.4),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.6);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  overflow: hidden;
+}
+
+.skeuo-body {
+  display: flex;
+  width: 100%;
+  border-radius: 14px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 
+    inset 0 2px 4px rgba(255, 255, 255, 0.25),
+    inset 0 -2px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Left and Right Rubber / Metal Grips ── */
+.skeuo-left-grip,
+.skeuo-right-grip {
+  width: 52px;
+  min-width: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 6px;
+  position: relative;
+  z-index: 3;
+}
+
+.skeuo-screw {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #94a3b8 0%, #334155 70%, #0f172a 100%);
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.5), 0 1px 2px rgba(0, 0, 0, 0.6);
+  position: relative;
+}
+.skeuo-screw::after {
+  content: '';
+  position: absolute;
+  top: 3px; left: 1px; right: 1px; height: 1px;
+  background: #0f172a;
+  transform: rotate(45deg);
+}
+
+.skeuo-led-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.skeuo-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #1e293b;
+  border: 1px solid #0f172a;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.8);
+  transition: all 0.2s ease;
+}
+.skeuo-led.amber.lit {
+  background: radial-gradient(circle at 35% 35%, #fef08a 0%, #f59e0b 60%, #b45309 100%);
+  box-shadow: 0 0 10px #f59e0b, inset 0 1px 1px #fff;
+}
+.skeuo-led.cyan.lit {
+  background: radial-gradient(circle at 35% 35%, #a5f3fc 0%, #06b6d4 60%, #0e7490 100%);
+  box-shadow: 0 0 10px #06b6d4, inset 0 1px 1px #fff;
+}
+.skeuo-led.cyan.blink {
+  animation: pulse 1s infinite;
+  background: radial-gradient(circle at 35% 35%, #a5f3fc 0%, #06b6d4 60%, #0e7490 100%);
+  box-shadow: 0 0 10px #06b6d4;
+}
+.skeuo-led.red.lit {
+  background: radial-gradient(circle at 35% 35%, #fca5a5 0%, #ef4444 60%, #991b1b 100%);
+  box-shadow: 0 0 10px #ef4444, inset 0 1px 1px #fff;
+}
+
+.skeuo-recessed-grooves {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0;
+}
+.skeuo-recessed-grooves .groove {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: #0f172a;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.skeuo-tactile-round-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 40%, #475569 0%, #1e293b 80%, #0f172a 100%);
+  border: 1px solid rgba(0, 0, 0, 0.8);
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+  color: #94a3b8;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.skeuo-tactile-round-btn:hover {
+  color: #f8fafc;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.6), inset 0 1px 2px rgba(255, 255, 255, 0.5);
+}
+.skeuo-tactile-round-btn:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.8), inset 0 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.skeuo-close-btn {
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.skeuo-close-btn:hover {
+  color: #f8fafc;
+}
+
+.skeuo-vertical-plate {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: 12px 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+.skeuo-vertical-plate:hover {
+  background: rgba(37, 99, 235, 0.2);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+.skeuo-vertical-plate.active {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.5);
+}
+.plate-text {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #64748b;
+}
+.skeuo-vertical-plate:hover .plate-text {
+  color: #94a3b8;
+}
+.plate-leds {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plate-led {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #334155;
+}
+.plate-led.on {
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+}
+
+/* ── Central Main Bezel Unit ── */
+.skeuo-center-unit {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+}
+
+.skeuo-top-plaque {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  min-height: 28px;
+}
+
+.plaque-emboss {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.brand-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.skeuo-skin-selector {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 9.5px;
+}
+.skin-icon {
+  font-size: 10px;
+  opacity: 0.75;
+}
+.skeuo-skin-dropdown {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  outline: none;
+  cursor: pointer;
+}
+.skeuo-skin-dropdown option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+/* ── Cockpit Curved Amber / Green LCD Housing ── */
+.skeuo-screen-housing {
+  padding: 4px 10px;
+  position: relative;
+}
+
+.skeuo-screen-glass {
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 
+    inset 0 4px 12px rgba(0, 0, 0, 0.8),
+    inset 0 -2px 6px rgba(0, 0, 0, 0.6),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  border: 2px solid;
+}
+
+.skeuo-hud-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  font-family: 'Courier New', monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid;
+  z-index: 5;
+}
+
+.hud-left-tags {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hud-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  opacity: 0.85;
+}
+.hud-track-name {
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.hud-right-telemetry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hud-vol-bars {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 10px;
+}
+.vol-bar {
+  width: 3px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 1px;
+}
+.vol-bar.filled {
+  background: currentColor;
+  box-shadow: 0 0 4px currentColor;
+}
+.hud-digital-clock {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.skeuo-viewport-content {
+  flex: 1;
+  position: relative;
+  min-height: clamp(260px, 36vh, 420px);
+  background: #000;
+  overflow: hidden;
+}
+
+/* Oscilloscope Waveform Overlay */
+.skeuo-oscilloscope-overlay {
+  position: absolute;
+  bottom: 8px;
+  left: 14px;
+  right: 14px;
+  height: 40px;
+  pointer-events: none;
+  opacity: 0.45;
+  z-index: 6;
+}
+.oscilloscope-svg {
+  width: 100%;
+  height: 100%;
+}
+.osc-wave-1 {
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 2;
+  animation: osc-drift 3s linear infinite;
+}
+.osc-wave-2 {
+  stroke: currentColor;
+  stroke-width: 1.2;
+  opacity: 0.6;
+  animation: osc-drift 2.2s linear infinite reverse;
+}
+@keyframes osc-drift {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-40px); }
+}
+
+/* ── Lower Mechanical Cockpit Deck & Knobs ── */
+.skeuo-bottom-deck {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px 12px;
+  gap: 16px;
+  position: relative;
+}
+
+/* Dual Convex Skip Buttons (Left) */
+.skeuo-convex-btn-module {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skeuo-convex-dual-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1.5px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 
+    0 6px 14px rgba(0, 0, 0, 0.45),
+    inset 0 2px 3px rgba(255, 255, 255, 0.4);
+}
+.skeuo-convex-dual-btn:hover {
+  transform: scale(1.08);
+}
+.skeuo-convex-dual-btn:active {
+  transform: scale(0.94);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.6), inset 0 2px 4px rgba(0, 0, 0, 0.6);
+}
+
+/* Rotary Sub-Group (Middle: SENS / GAIN Micro-Dials) */
+.skeuo-rotary-sub-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.skeuo-micro-dial-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.skeuo-micro-knob {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  position: relative;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 
+    0 4px 10px rgba(0, 0, 0, 0.5),
+    inset 0 1px 2px rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(0, 0, 0, 0.6);
+}
+.knob-notch {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2.5px;
+  height: 6px;
+  border-radius: 1px;
+  background: currentColor;
+  box-shadow: 0 0 4px currentColor;
+}
+.micro-knob-label {
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  opacity: 0.7;
+}
+
+/* Master Precision Knurled Dial */
+.skeuo-master-dial-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+}
+.skeuo-master-knob {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  position: relative;
+  border: 2px solid;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 
+    0 10px 24px rgba(0, 0, 0, 0.55),
+    inset 0 3px 6px rgba(255, 255, 255, 0.5),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.6);
+}
+.master-radial-shimmer {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.3) 0deg,
+    rgba(0, 0, 0, 0.4) 90deg,
+    rgba(255, 255, 255, 0.3) 180deg,
+    rgba(0, 0, 0, 0.4) 270deg,
+    rgba(255, 255, 255, 0.3) 360deg
+  );
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.master-knob-tick {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 9px;
+  border-radius: 1.5px;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+  z-index: 3;
+}
+.master-dial-graduations {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.grad-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+}
+.grad-dot.active {
+  background: currentColor;
+  box-shadow: 0 0 4px currentColor;
+}
+
+/* Large Convex Play / Pause Button (Right) */
+.skeuo-convex-play-module {
+  display: flex;
+  align-items: center;
+}
+.skeuo-convex-main-btn {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 2.5px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 20px;
+  transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 
+    0 10px 25px rgba(0, 0, 0, 0.55),
+    inset 0 3px 5px rgba(255, 255, 255, 0.5);
+  position: relative;
+  overflow: hidden;
+}
+.skeuo-convex-main-btn:hover {
+  transform: scale(1.1);
+}
+.skeuo-convex-main-btn:active {
+  transform: scale(0.95);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.8), inset 0 3px 6px rgba(0, 0, 0, 0.8);
+}
+.skeuo-convex-main-btn.playing {
+  box-shadow: 0 10px 28px rgba(16, 185, 129, 0.4), inset 0 3px 5px rgba(255, 255, 255, 0.5);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   SKIN 1: WINAMP 3 AMBER TITANIUM (EXACT REFERENCE IMAGE THEME)
+   ══════════════════════════════════════════════════════════════════ */
+.skeuo-chassis.winamp-amber {
+  background: linear-gradient(180deg, #e2e8f0 0%, #cbd5e1 50%, #94a3b8 100%);
+  border: 1px solid #64748b;
+}
+.winamp-amber .skeuo-body {
+  background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 45%, #cbd5e1 100%);
+}
+.winamp-amber .skeuo-left-grip,
+.winamp-amber .skeuo-right-grip {
+  background: linear-gradient(180deg, #334155 0%, #1e293b 60%, #0f172a 100%);
+  box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.15), inset 0 -2px 6px rgba(0, 0, 0, 0.8);
+}
+.winamp-amber .plaque-emboss {
+  color: #475569;
+  text-shadow: 0 1px 0 #fff;
+}
+.winamp-amber .skeuo-skin-selector {
+  color: #334155;
+  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+.winamp-amber .skeuo-screen-glass {
+  border-color: #f59e0b;
+  background: radial-gradient(circle at center, #d97706 0%, #b45309 60%, #78350f 100%);
+  box-shadow: 
+    0 0 25px rgba(245, 158, 11, 0.45),
+    inset 0 4px 14px rgba(0, 0, 0, 0.85);
+}
+.winamp-amber .skeuo-hud-header {
+  background: rgba(120, 53, 15, 0.65);
+  color: #fef08a;
+  border-bottom-color: rgba(245, 158, 11, 0.35);
+  text-shadow: 0 0 8px rgba(254, 240, 138, 0.6);
+}
+.winamp-amber .skeuo-oscilloscope-overlay {
+  color: #fef08a;
+  filter: drop-shadow(0 0 6px #f59e0b);
+}
+.winamp-amber .skeuo-convex-dual-btn {
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #e2e8f0 70%, #94a3b8 100%);
+  border-color: #cbd5e1;
+  color: #334155;
+}
+.winamp-amber .skeuo-micro-knob {
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #cbd5e1 75%, #64748b 100%);
+  color: #f59e0b;
+}
+.winamp-amber .micro-knob-label {
+  color: #475569;
+}
+.winamp-amber .skeuo-master-knob {
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #e2e8f0 60%, #64748b 100%);
+  border-color: #cbd5e1;
+  color: #f59e0b;
+}
+.winamp-amber .skeuo-convex-main-btn {
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #e2e8f0 60%, #94a3b8 100%);
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+.winamp-amber .skeuo-convex-main-btn.playing {
+  color: #059669;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   SKIN 2: MAHOGANY WOODGRAIN & POLISHED BRASS
+   ══════════════════════════════════════════════════════════════════ */
+.skeuo-chassis.wood-brass {
+  background: linear-gradient(135deg, #451a03 0%, #290e02 50%, #1c0801 100%);
+  border: 1px solid #78350f;
+  box-shadow: 0 25px 55px rgba(0, 0, 0, 0.8), inset 0 1px 2px rgba(251, 191, 36, 0.4);
+}
+.wood-brass .skeuo-body {
+  background: 
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 1px, transparent 1px, transparent 12px),
+    linear-gradient(180deg, #78350f 0%, #451a03 40%, #290e02 100%);
+}
+.wood-brass .skeuo-left-grip,
+.wood-brass .skeuo-right-grip {
+  background: linear-gradient(180deg, #1c0801 0%, #0c0401 100%);
+  border-color: #451a03;
+}
+.wood-brass .skeuo-screw {
+  background: radial-gradient(circle at 35% 35%, #fef08a 0%, #d97706 70%, #78350f 100%);
+}
+.wood-brass .plaque-emboss {
+  color: #fbbf24;
+  text-shadow: 0 1px 2px #000;
+}
+.wood-brass .skeuo-skin-selector {
+  color: #fbbf24;
+  background: rgba(0, 0, 0, 0.5);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+.wood-brass .skeuo-screen-glass {
+  border-color: #10b981;
+  background: radial-gradient(circle at center, #064e3b 0%, #022c22 70%, #011812 100%);
+  box-shadow: 0 0 25px rgba(16, 185, 129, 0.4), inset 0 4px 14px rgba(0, 0, 0, 0.9);
+}
+.wood-brass .skeuo-hud-header {
+  background: rgba(2, 44, 34, 0.8);
+  color: #6ee7b7;
+  border-bottom-color: rgba(16, 185, 129, 0.3);
+  text-shadow: 0 0 8px rgba(110, 231, 183, 0.6);
+}
+.wood-brass .skeuo-oscilloscope-overlay {
+  color: #6ee7b7;
+  filter: drop-shadow(0 0 6px #10b981);
+}
+.wood-brass .skeuo-convex-dual-btn,
+.wood-brass .skeuo-micro-knob,
+.wood-brass .skeuo-master-knob,
+.wood-brass .skeuo-convex-main-btn {
+  background: radial-gradient(circle at 35% 35%, #fef08a 0%, #f59e0b 60%, #b45309 100%);
+  border-color: #fbbf24;
+  color: #78350f;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.6);
+}
+.wood-brass .micro-knob-label {
+  color: #fbbf24;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   SKIN 3: CYBERPUNK OBSIDIAN & NEON CYAN
+   ══════════════════════════════════════════════════════════════════ */
+.skeuo-chassis.cyber-obsidian {
+  background: linear-gradient(180deg, #0f172a 0%, #020617 100%);
+  border: 1px solid #06b6d4;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9), 0 0 25px rgba(6, 182, 212, 0.3);
+}
+.cyber-obsidian .skeuo-body {
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 60%, #020617 100%);
+}
+.cyber-obsidian .skeuo-left-grip,
+.cyber-obsidian .skeuo-right-grip {
+  background: #020617;
+  box-shadow: inset 0 0 10px rgba(6, 182, 212, 0.2);
+}
+.cyber-obsidian .plaque-emboss {
+  color: #38bdf8;
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+}
+.cyber-obsidian .skeuo-skin-selector {
+  color: #38bdf8;
+  background: rgba(6, 182, 212, 0.15);
+  border-color: rgba(6, 182, 212, 0.4);
+}
+.cyber-obsidian .skeuo-screen-glass {
+  border-color: #06b6d4;
+  background: radial-gradient(circle at center, #083344 0%, #021a24 70%, #000b10 100%);
+  box-shadow: 0 0 30px rgba(6, 182, 212, 0.4), inset 0 4px 14px rgba(0, 0, 0, 0.9);
+}
+.cyber-obsidian .skeuo-hud-header {
+  background: rgba(8, 51, 68, 0.85);
+  color: #38bdf8;
+  border-bottom-color: rgba(6, 182, 212, 0.4);
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+}
+.cyber-obsidian .skeuo-oscilloscope-overlay {
+  color: #38bdf8;
+  filter: drop-shadow(0 0 6px #06b6d4);
+}
+.cyber-obsidian .skeuo-convex-dual-btn,
+.cyber-obsidian .skeuo-micro-knob,
+.cyber-obsidian .skeuo-master-knob,
+.cyber-obsidian .skeuo-convex-main-btn {
+  background: radial-gradient(circle at 35% 35%, #334155 0%, #0f172a 70%, #020617 100%);
+  border-color: #06b6d4;
+  color: #38bdf8;
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.35);
+}
+.cyber-obsidian .micro-knob-label {
+  color: #38bdf8;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   SKIN 4: 1980s VINTAGE HI-FI BRUSHED ALUMINUM
+   ══════════════════════════════════════════════════════════════════ */
+.skeuo-chassis.vintage-hifi {
+  background: linear-gradient(180deg, #f1f5f9 0%, #cbd5e1 100%);
+  border: 1px solid #94a3b8;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
+}
+.vintage-hifi .skeuo-body {
+  background: 
+    repeating-linear-gradient(90deg, rgba(0,0,0,0.015) 0px, rgba(0,0,0,0.015) 1px, transparent 1px, transparent 4px),
+    linear-gradient(180deg, #ffffff 0%, #f1f5f9 45%, #e2e8f0 100%);
+}
+.vintage-hifi .skeuo-left-grip,
+.vintage-hifi .skeuo-right-grip {
+  background: linear-gradient(180deg, #475569 0%, #334155 100%);
+}
+.vintage-hifi .plaque-emboss {
+  color: #1e293b;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  letter-spacing: 2px;
+}
+.vintage-hifi .skeuo-skin-selector {
+  color: #1e293b;
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.2);
+}
+.vintage-hifi .skeuo-screen-glass {
+  border-color: #3b82f6;
+  background: radial-gradient(circle at center, #1e3a8a 0%, #172554 70%, #0f172a 100%);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.35), inset 0 4px 14px rgba(0, 0, 0, 0.85);
+}
+.vintage-hifi .skeuo-hud-header {
+  background: rgba(30, 58, 138, 0.8);
+  color: #93c5fd;
+  border-bottom-color: rgba(59, 130, 246, 0.3);
+  text-shadow: 0 0 6px rgba(147, 197, 253, 0.5);
+}
+.vintage-hifi .skeuo-oscilloscope-overlay {
+  color: #93c5fd;
+  filter: drop-shadow(0 0 5px #3b82f6);
+}
+.vintage-hifi .skeuo-convex-dual-btn,
+.vintage-hifi .skeuo-micro-knob,
+.vintage-hifi .skeuo-master-knob,
+.vintage-hifi .skeuo-convex-main-btn {
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #e2e8f0 65%, #94a3b8 100%);
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+.vintage-hifi .micro-knob-label {
+  color: #334155;
+}

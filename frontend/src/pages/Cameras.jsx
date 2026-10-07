@@ -54,12 +54,21 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
     onNavigate('dashboard')
   }
 
-  const toggleDetection = async (camId, currentStatus) => {
+  const [loadingCams, setLoadingCams] = useState({})
+
+  const toggleDetection = async (camId, currentStatus, isRunning) => {
+    if (loadingCams[camId]) return
+    setLoadingCams(prev => ({ ...prev, [camId]: true }))
     try {
-      const action = currentStatus === 'online' ? 'stop' : 'start'
+      const isOnline = currentStatus === 'online' || isRunning
+      const action = isOnline ? 'stop' : 'start'
       await api.post(`/api/cameras/${camId}/detection/${action}`)
-      onRefreshCameras()
-    } catch (e) { console.error(e) }
+      await onRefreshCameras()
+    } catch (e) {
+      console.error("Toggle detection error", e)
+    } finally {
+      setLoadingCams(prev => ({ ...prev, [camId]: false }))
+    }
   }
 
   const handleFullscreen = (e, camId) => {
@@ -119,57 +128,99 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
           </div>
         </div>
       )}
-
       <div className="cam-grid">
-        {cameras.map(cam => (
-          <div key={cam.id} className={`cam-tile${activeCam?.id===cam.id?' active':''}`}>
-            <div className="cam-tile-video" id={`cam-tile-video-${cam.id}`}>
-              {cam.status === 'online' ? (
-                <img src={`${streamUrl(cam.id)}?t=${streamKey}`} alt={cam.name} style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>e.target.style.display='none'}/>
-              ) : (
-                <div style={{
-                  width: '100%',
-                  height: '100%',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: 'var(--bg)',
-                  color: 'var(--t3)',
-                  fontSize: '11px',
-                  gap: '8px'
-                }}>
-                  <i className="fa-solid fa-video-slash" style={{ fontSize: '20px', color: '#ef4444' }}/>
-                  <span>Stream Offline</span>
-                </div>
-              )}
-              <div className="cam-tile-badge" style={{backgroundColor: cam.status === 'online' ? '#065f46' : '#7f1d1d', color: '#fff'}}>{cam.status||'Offline'}</div>
-              <button className="icon-btn" 
-                      style={{position:'absolute', bottom: 8, right: 8, background:'rgba(0,0,0,0.5)', borderRadius:'4px', color:'#fff'}} 
-                      onClick={(e)=>handleFullscreen(e, cam.id)} title="Fullscreen">
-                <i className="fa-solid fa-expand" />
-              </button>
-            </div>
-            <div className="cam-tile-info">
-              <div className="cam-tile-name">{cam.name}</div>
-              <div className="cam-tile-sub" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>Source: {cam.source}</div>
-              <div className="cam-tile-sub" style={{fontSize: '11px', color: '#10b981', marginTop: '2px', fontWeight: '500'}}>
-                 Mode: {JSON.parse(cam.config_json || '{}').mode === 'driver' ? 'Driver Monitor (DMS)' : 'Traffic Compliance'}
-              </div>
-              <div className="cam-tile-actions" style={{marginTop: '12px'}}>
-                <button className="act-btn act-green" onClick={()=>handleViewLive(cam.id)}>View Live</button>
-                <button className={`act-btn ${cam.status === 'online' ? 'act-red' : 'act-out'}`} 
-                        onClick={()=>toggleDetection(cam.id, cam.status)}>
-                  <i className={`fa-solid ${cam.status === 'online' ? 'fa-stop' : 'fa-play'}`} style={{marginRight: '4px'}}/>
-                  {cam.status === 'online' ? 'Stop' : 'Start'}
+        {cameras.map(cam => {
+          const isOnline = cam.status === 'online' || !!cam.runtime_status?.running
+          return (
+            <div key={cam.id} className={`cam-tile${activeCam?.id===cam.id?' active':''}`}>
+              <div className="cam-tile-video" id={`cam-tile-video-${cam.id}`} style={{ position: 'relative' }}>
+                {loadingCams[cam.id] && (
+                  <div style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgba(8, 12, 21, 0.85)',
+                    color: 'var(--t1)',
+                    fontSize: '11px',
+                    gap: '8px',
+                    zIndex: 4,
+                    backdropFilter: 'blur(4px)'
+                  }}>
+                    <i className="fa-solid fa-circle-notch fa-spin" style={{ fontSize: '20px', color: '#2563eb' }} />
+                    <span>{isOnline ? 'Stopping stream...' : 'Starting stream...'}</span>
+                  </div>
+                )}
+
+                {isOnline ? (
+                  <img
+                    src={`${streamUrl(cam.id)}?t=${streamKey}`}
+                    alt={cam.name}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    onError={(e) => {
+                      setTimeout(() => {
+                        if (e.target) e.target.src = `${streamUrl(cam.id)}?t=${Date.now()}`
+                      }, 1200)
+                    }}
+                  />
+                ) : (
+                  <div style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'var(--bg)',
+                    color: 'var(--t3)',
+                    fontSize: '11px',
+                    gap: '8px'
+                  }}>
+                    <i className="fa-solid fa-video-slash" style={{ fontSize: '20px', color: '#ef4444' }}/>
+                    <span>Stream Offline</span>
+                  </div>
+                )}
+                <div className="cam-tile-badge" style={{backgroundColor: isOnline ? '#065f46' : '#7f1d1d', color: '#fff'}}>{isOnline ? 'online' : 'offline'}</div>
+                <button className="icon-btn" 
+                        style={{position:'absolute', bottom: 8, right: 8, background:'rgba(0,0,0,0.5)', borderRadius:'4px', color:'#fff'}} 
+                        onClick={(e)=>handleFullscreen(e, cam.id)} title="Fullscreen">
+                  <i className="fa-solid fa-expand" />
                 </button>
-                <button className="act-btn act-out" onClick={()=>removeCamera(cam.id)}><i className="fa-solid fa-trash"/></button>
+              </div>
+              <div className="cam-tile-info">
+                <div className="cam-tile-name">{cam.name}</div>
+                <div className="cam-tile-sub" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>Source: {cam.source}</div>
+                <div className="cam-tile-sub" style={{fontSize: '11px', color: '#10b981', marginTop: '2px', fontWeight: '500'}}>
+                   Mode: {JSON.parse(cam.config_json || '{}').mode === 'driver' ? 'Driver Monitor (DMS)' : 'Traffic Compliance'}
+                </div>
+                <div className="cam-tile-actions" style={{marginTop: '12px'}}>
+                  <button className="act-btn act-green" onClick={()=>handleViewLive(cam.id)}>View Live</button>
+                  <button className={`act-btn ${isOnline ? 'act-red' : 'act-out'}`} 
+                          onClick={()=>toggleDetection(cam.id, cam.status, !!cam.runtime_status?.running)}
+                          disabled={!!loadingCams[cam.id]}>
+                    {loadingCams[cam.id] ? (
+                      <>
+                        <i className="fa-solid fa-circle-notch fa-spin" style={{marginRight: '4px'}}/>
+                        {isOnline ? 'Stopping...' : 'Starting...'}
+                      </>
+                    ) : (
+                      <>
+                        <i className={`fa-solid ${isOnline ? 'fa-stop' : 'fa-play'}`} style={{marginRight: '4px'}}/>
+                        {isOnline ? 'Stop' : 'Start'}
+                      </>
+                    )}
+                  </button>
+                  <button className="act-btn act-out" onClick={()=>removeCamera(cam.id)}><i className="fa-solid fa-trash"/></button>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
         {cameras.length === 0 && <div className="empty-state"><i className="fa-solid fa-video-slash"/><p>No cameras found. Add one to get started.</p></div>}
       </div>
+
     </div>
   )
 }

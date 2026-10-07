@@ -4,6 +4,7 @@ All tuneable parameters and path constants.
 """
 
 import os
+import json
 from pathlib import Path
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -50,6 +51,23 @@ PEDESTRIAN_ZONE_MARGIN  = 80     # Extra px around stop line for pedestrian zone
 VIOLATION_COOLDOWN_SEC  = 5      # Min seconds between violations for same vehicle
 MIN_TRACKED_FRAMES      = 5      # Must track vehicle ≥ N frames before violation check
 
+# ── Redis Configuration ───────────────────────────────────────────────────────
+REDIS_ENABLED   = os.getenv("REDIS_ENABLED", "true").lower() in ("1", "true", "yes")
+REDIS_URL       = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# ── MinIO / S3 Object Storage Configuration ───────────────────────────────────
+MINIO_ENABLED   = os.getenv("MINIO_ENABLED", "true").lower() in ("1", "true", "yes")
+MINIO_ENDPOINT  = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+MINIO_SECURE    = os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes")
+MINIO_BUCKET    = os.getenv("MINIO_BUCKET", "safety-violations")
+
+# ── WebRTC Configuration ──────────────────────────────────────────────────────
+WEBRTC_ENABLED  = os.getenv("WEBRTC_ENABLED", "true").lower() in ("1", "true", "yes")
+ICE_SERVERS     = json.loads(os.getenv("ICE_SERVERS", '[{"urls": ["stun:stun.l.google.com:19302"]}]')) if "json" in globals() else [{"urls": ["stun:stun.l.google.com:19302"]}]
+
 # ── App Server ────────────────────────────────────────────────────────────────
-HOST = "0.0.0.0"
-PORT = 8000
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8000"))
+

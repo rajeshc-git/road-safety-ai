@@ -1,6 +1,6 @@
 """
-Safety Stop AI — FastAPI Application
-REST API + WebSocket + MJPEG streaming server.
+VIGILIX AI — FastAPI Application
+Autonomous Traffic & Cabin Compliance Monitoring System
 """
 
 import asyncio
@@ -10,17 +10,24 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+# pyrefly: ignore [missing-import]
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Request
+# pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+# pyrefly: ignore [missing-import]
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
+# pyrefly: ignore [missing-import]
 from fastapi.staticfiles import StaticFiles
 
 import database as db
 from camera_manager import CameraManager
 from config import SNAPSHOTS_DIR, HOST, PORT
+import redis_service
+import minio_service
+import webrtc_service
 
 # ── App Setup ─────────────────────────────────────────────────────────────────
-app = FastAPI(title="Safety Stop AI", version="1.0.0")
+app = FastAPI(title="VIGILIX AI", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +48,8 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 async def startup():
     global camera_manager
     db.init_db()
+    await redis_service.init_redis()
+    await minio_service.init_minio()
     loop = asyncio.get_event_loop()
     camera_manager = CameraManager(loop)
     await camera_manager.load_existing_cameras()
@@ -49,7 +58,9 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    pass
+    await webrtc_service.close_all_webrtc_connections()
+    await redis_service.close_redis()
+
 
 
 # ── WebSocket: Live Camera Stream ─────────────────────────────────────────────
@@ -119,6 +130,12 @@ async def start_detection(cam_id: int):
     return {"status": "started"}
 
 
+@app.post("/api/cameras/{cam_id}/detection/switch")
+async def switch_detection(cam_id: int):
+    await camera_manager.switch_active_stream(cam_id)
+    return {"status": "switched", "active_camera_id": cam_id}
+
+
 @app.post("/api/cameras/{cam_id}/detection/stop")
 async def stop_detection(cam_id: int):
     await camera_manager.stop_detection(cam_id)
@@ -157,6 +174,18 @@ async def list_events(
     return await db.get_events(page, per_page, camera_id, status, date_from, date_to, event_category)
 
 
+@app.get("/api/events/ids")
+async def list_event_ids(
+    camera_id: Optional[int] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    event_category: Optional[str] = None,
+):
+    ids = await db.get_event_ids(camera_id, status, date_from, date_to, event_category)
+    return {"ids": ids, "total": len(ids)}
+
+
 @app.get("/api/events/stats")
 async def event_stats():
     return await db.get_event_stats()
@@ -192,13 +221,26 @@ async def delete_all_events():
     return {"status": "deleted", "count": count}
 
 
+@app.post("/api/cameras/{cam_id}/webrtc/offer")
+async def webrtc_offer(cam_id: int, data: dict):
+    """WebRTC signaling endpoint for browser video streaming."""
+    offer_sdp = data.get("sdp")
+    offer_type = data.get("type", "offer")
+    if not offer_sdp:
+        raise HTTPException(400, "Missing SDP offer")
+    answer = await webrtc_service.handle_webrtc_offer(cam_id, offer_sdp, offer_type)
+    if not answer:
+        raise HTTPException(500, "Failed to negotiate WebRTC session")
+    return answer
+
+
 # ── Snapshots ─────────────────────────────────────────────────────────────────
 @app.get("/api/snapshots/{filename}")
 async def get_snapshot(filename: str):
-    path = SNAPSHOTS_DIR / filename
-    if not path.exists():
+    img_bytes = await minio_service.get_snapshot_bytes(filename)
+    if not img_bytes:
         raise HTTPException(404, "Snapshot not found")
-    return FileResponse(str(path), media_type="image/jpeg")
+    return Response(content=img_bytes, media_type="image/jpeg")
 
 
 # ── Settings API ──────────────────────────────────────────────────────────────
@@ -233,16 +275,22 @@ async def system_status():
         import psutil
         cpu  = psutil.cpu_percent(interval=0.1)
         mem  = psutil.virtual_memory().percent
-        disk = psutil.disk_usage("C:\\").percent
+        disk = psutil.disk_usage("C:\\" if os.name == "nt" else "/").percent
         gpu  = _get_gpu_usage()
     except Exception:
         cpu, mem, disk, gpu = 0, 0, 0, None
+
+    redis_info = await redis_service.get_redis_info()
+    minio_info = await minio_service.get_minio_info()
+
     return {
         "status": "running",
         "cpu_usage": cpu,
         "memory_usage": mem,
         "disk_usage": disk,
         "gpu_usage": gpu,
+        "redis": redis_info,
+        "minio": minio_info,
     }
 
 
@@ -273,16 +321,7 @@ async def mjpeg_stream(cam_id: int):
             while True:
                 stream = camera_manager.get_stream(cam_id)
                 if not stream or not stream.is_running:
-                    # Adaptive Reconnect: Instead of closing connection, wait up to 5s for the stream to restart
-                    reconnected = False
-                    for _ in range(50):
-                        await asyncio.sleep(0.1)
-                        stream = camera_manager.get_stream(cam_id)
-                        if stream and stream.is_running:
-                            reconnected = True
-                            break
-                    if not reconnected:
-                        break
+                    break
                 if hasattr(stream, '_latest_frame') and stream._latest_frame is not None:
                     yield (b"--frame\r\n"
                            b"Content-Type: image/jpeg\r\n\r\n" +
@@ -298,28 +337,34 @@ async def mjpeg_stream(cam_id: int):
     )
 
 
-# ── Frontend Static Files ─────────────────────────────────────────────────────
-# Serve frontend static assets
-if FRONTEND_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
+# ── Frontend Production Static Files (dist) ───────────────────────────────────
+FRONTEND_DIST = FRONTEND_DIR / "dist"
+STATIC_DIR = FRONTEND_DIST if (FRONTEND_DIST / "index.html").exists() else FRONTEND_DIR
+ASSETS_DIR = STATIC_DIR / "assets"
+
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="frontend_assets")
+elif STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="frontend_assets")
 
 
 @app.get("/")
 async def serve_index():
-    index = FRONTEND_DIR / "index.html"
+    index = STATIC_DIR / "index.html"
     if index.exists():
         return FileResponse(str(index))
-    return JSONResponse({"status": "Safety Stop AI running — frontend not found"})
+    return JSONResponse({"status": "Safety Stop AI running — frontend production build not found. Run 'bun run build' in frontend/"})
 
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    # Serve static files from frontend dir
-    file_path = FRONTEND_DIR / full_path
+    # Try serving exact file if it exists in static dir
+    file_path = STATIC_DIR / full_path
     if file_path.exists() and file_path.is_file():
         return FileResponse(str(file_path))
-    # Fall back to index.html for SPA routing
-    index = FRONTEND_DIR / "index.html"
+    # Fall back to index.html for SPA client-side routing
+    index = STATIC_DIR / "index.html"
     if index.exists():
         return FileResponse(str(index))
     raise HTTPException(404)
+
