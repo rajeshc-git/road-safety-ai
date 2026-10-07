@@ -8,7 +8,34 @@ echo                             VIGILIX AI - PRODUCTION SYSTEM
 echo ======================================================================================
 echo.
 
-REM == STEP 1: Verify Bun Runtime (Auto-Install if Missing) ==================
+REM == STEP 1: Verify Python & Virtual Environment (.venv) ====================
+where python >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Python is not detected in your system PATH.
+    echo Please install Python 3.10+ from https://www.python.org/ and ensure "Add Python to PATH" is checked.
+    pause
+    exit /b 1
+)
+
+if not exist ".venv\Scripts\python.exe" (
+    echo [*] Python virtual environment (.venv) not detected.
+    echo [*] Creating virtual environment (.venv)...
+    python -m venv .venv
+    if exist ".venv\Scripts\python.exe" (
+        echo [*] Installing backend dependencies from backend\requirements.txt...
+        call .venv\Scripts\python.exe -m pip install --upgrade pip >nul 2>&1
+        call .venv\Scripts\pip.exe install -r backend\requirements.txt
+        echo [OK] Backend virtual environment and dependencies ready.
+        set "PYTHON_EXEC=.venv\Scripts\python.exe"
+    ) else (
+        echo [!] Warning: Could not create .venv. Falling back to system Python.
+        set "PYTHON_EXEC=python"
+    )
+) else (
+    set "PYTHON_EXEC=.venv\Scripts\python.exe"
+)
+
+REM == STEP 2: Verify Bun Runtime (Auto-Install if Missing) ==================
 where bun >nul 2>&1
 if %errorlevel% equ 0 goto :bun_ok
 
@@ -18,7 +45,7 @@ set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
 
 :bun_ok
 
-REM == STEP 2: Fast Frontend Packages & Production dist Check ===============
+REM == STEP 3: Fast Frontend Packages & Production dist Check ===============
 if exist "frontend\node_modules" goto :node_modules_ok
 echo [*] Installing frontend packages using Bun...
 cd frontend
@@ -33,7 +60,7 @@ call bun run build
 cd ..
 :dist_ok
 
-REM == STEP 3: Docker Infrastructure Check (Redis and MinIO) ==================
+REM == STEP 4: Docker Infrastructure Check (Redis and MinIO) ==================
 where docker >nul 2>&1
 if %errorlevel% neq 0 goto :docker_skip
 
@@ -47,7 +74,7 @@ echo [OK] Redis and MinIO containers verified.
 
 :docker_skip
 
-REM == STEP 4: Ensure Data Folders Exist =====================================
+REM == STEP 5: Ensure Data Folders Exist =====================================
 if not exist "data\snapshots" mkdir "data\snapshots"
 if not exist "data\test_videos" mkdir "data\test_videos"
 if not exist "data\minio" mkdir "data\minio"
@@ -64,8 +91,8 @@ echo   Press Ctrl + C to stop the system.
 echo ======================================================================================
 echo.
 
-REM 1. Launch FastAPI Backend
-start /b cmd /c "python run.py"
+REM 1. Launch FastAPI Backend with Virtual Environment
+start /b cmd /c "%PYTHON_EXEC% run.py"
 
 REM Wait for Backend AI Engine to be fully initialized & ready
 echo [*] Waiting for Backend AI Engine and Cache initialization...
