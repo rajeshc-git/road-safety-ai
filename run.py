@@ -16,6 +16,7 @@ os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 
 try:
+    # pyrefly: ignore [missing-import]
     import torch
     torch.set_num_threads(2)
 except Exception:
@@ -69,9 +70,10 @@ if __name__ == "__main__":
     print("  VIGILIX AI — Autonomous Traffic & Cabin Compliance")
     print("  Version 1.0.0")
     print("=" * 60)
-    print(f"  Unified Dashboard: http://localhost:{PORT}")
-    print(f"  Frontend Preview:  http://localhost:3000")
+    print(f"  Unified Dashboard: http://localhost:9999")
+    print(f"  Backend REST API:  http://localhost:{PORT}")
     print(f"  API Docs (Swagger): http://localhost:{PORT}/docs")
+
     print("=" * 60)
 
     uvicorn.run(

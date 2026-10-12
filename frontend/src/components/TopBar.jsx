@@ -3,17 +3,20 @@ import './TopBar.css'
 
 export default function TopBar({ sidebarCollapsed, onToggleSidebar }) {
   const [time, setTime] = useState('')
-  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark')
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'light')
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement)
 
   useEffect(() => {
-    if (theme === 'light') {
-      document.documentElement.classList.add('light-theme')
-    } else {
+    if (theme === 'dark') {
       document.documentElement.classList.remove('light-theme')
+      document.documentElement.classList.add('dark-theme')
+    } else {
+      document.documentElement.classList.add('light-theme')
+      document.documentElement.classList.remove('dark-theme')
     }
     localStorage.setItem('theme', theme)
   }, [theme])
+
 
   useEffect(() => {
     const handleFullscreenChange = () => {

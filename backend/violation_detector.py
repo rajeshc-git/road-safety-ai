@@ -113,7 +113,8 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
 
         raw_detections = []
         if backend == "easyocr":
-            results = reader.readtext(lower_portion)
+            with _ocr_lock:
+                results = reader.readtext(lower_portion)
             for res in results:
                 if len(res) >= 3:
                     bbox, text, conf = res[0], res[1], float(res[2])

@@ -93,7 +93,9 @@ async def list_cameras():
     result = []
     for cam in cams:
         status = await camera_manager.get_status(cam["id"])
-        result.append({**cam, "runtime_status": status})
+        is_running = status.get("running", False)
+        effective_status = "online" if is_running else cam.get("status", "offline")
+        result.append({**cam, "status": effective_status, "runtime_status": status})
     return result
 
 
@@ -115,7 +117,9 @@ async def get_camera(cam_id: int):
     if not cam:
         raise HTTPException(404, "Camera not found")
     status = await camera_manager.get_status(cam_id)
-    return {**cam, "runtime_status": status}
+    is_running = status.get("running", False)
+    effective_status = "online" if is_running else cam.get("status", "offline")
+    return {**cam, "status": effective_status, "runtime_status": status}
 
 
 @app.put("/api/cameras/{cam_id}/config")
@@ -237,10 +241,22 @@ async def webrtc_offer(cam_id: int, data: dict):
 # ── Snapshots ─────────────────────────────────────────────────────────────────
 @app.get("/api/snapshots/{filename}")
 async def get_snapshot(filename: str):
-    img_bytes = await minio_service.get_snapshot_bytes(filename)
+    # Sanitize filename
+    safe_name = Path(filename).name
+    local_path = SNAPSHOTS_DIR / safe_name
+    cache_headers = {
+        "Cache-Control": "public, max-age=86400, immutable",
+    }
+
+    # 1. High-speed local disk serving (0ms, avoids MinIO network/connection pool contention)
+    if local_path.is_file():
+        return FileResponse(str(local_path), media_type="image/jpeg", headers=cache_headers)
+
+    # 2. Remote MinIO fallback
+    img_bytes = await minio_service.get_snapshot_bytes(safe_name)
     if not img_bytes:
         raise HTTPException(404, "Snapshot not found")
-    return Response(content=img_bytes, media_type="image/jpeg")
+    return Response(content=img_bytes, media_type="image/jpeg", headers=cache_headers)
 
 
 # ── Settings API ──────────────────────────────────────────────────────────────
@@ -306,34 +322,57 @@ async def system_reset():
 
 # ── MJPEG Streaming ──────────────────────────────────────────────────────────
 @app.get("/api/cameras/{cam_id}/stream")
-async def mjpeg_stream(cam_id: int):
-    """MJPEG stream — much more efficient than base64-over-WebSocket."""
+async def mjpeg_stream(request: Request, cam_id: int):
+    """MJPEG stream with client-disconnect detection and non-buffered headers."""
+    stream = camera_manager.get_stream(cam_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Camera stream is offline")
+
     async def generate():
         camera_manager.increment_mjpeg_viewers(cam_id)
         try:
-            # Adaptive boot-up wait: wait up to 3 seconds for the camera thread to spin up
-            for _ in range(30):
-                stream = camera_manager.get_stream(cam_id)
-                if stream and stream.is_running:
+            # Adaptive boot-up wait: wait up to 1 second for the camera thread to spin up
+            for _ in range(10):
+                if await request.is_disconnected():
+                    return
+                s = camera_manager.get_stream(cam_id)
+                if not s:
+                    return
+                if s.is_running:
                     break
                 await asyncio.sleep(0.1)
 
             while True:
-                stream = camera_manager.get_stream(cam_id)
-                if not stream or not stream.is_running:
+                # Promptly stop streaming if client paused, closed tab, or disconnected
+                if await request.is_disconnected():
                     break
-                if hasattr(stream, '_latest_frame') and stream._latest_frame is not None:
+                s = camera_manager.get_stream(cam_id)
+                if not s or not s.is_running:
+                    break
+                frame = getattr(s, '_latest_frame', None)
+                if frame is not None:
                     yield (b"--frame\r\n"
                            b"Content-Type: image/jpeg\r\n\r\n" +
-                           stream._latest_frame + b"\r\n")
-                fps_cap = getattr(stream, "target_fps", 25)
+                           frame + b"\r\n")
+                fps_cap = getattr(s, "target_fps", 25)
                 await asyncio.sleep(1.0 / max(1, fps_cap))
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
         finally:
             camera_manager.decrement_mjpeg_viewers(cam_id)
+
+    stream_headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-Accel-Buffering": "no",
+        "Connection": "close",
+    }
 
     return StreamingResponse(
         generate(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+        headers=stream_headers,
     )
 
 

@@ -59,15 +59,21 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
   const toggleDetection = async (camId, currentStatus, isRunning) => {
     if (loadingCams[camId]) return
     setLoadingCams(prev => ({ ...prev, [camId]: true }))
+    const safetyTimer = setTimeout(() => {
+      setLoadingCams(prev => ({ ...prev, [camId]: false }))
+    }, 3500)
+
     try {
       const isOnline = currentStatus === 'online' || isRunning
       const action = isOnline ? 'stop' : 'start'
-      await api.post(`/api/cameras/${camId}/detection/${action}`)
+      await api.post(`/api/cameras/${camId}/detection/${action}`, {}, 5000)
       await onRefreshCameras()
     } catch (e) {
       console.error("Toggle detection error", e)
     } finally {
+      clearTimeout(safetyTimer)
       setLoadingCams(prev => ({ ...prev, [camId]: false }))
+      setTimeout(() => onRefreshCameras?.().catch?.(() => {}), 300)
     }
   }
 
@@ -160,9 +166,11 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
                     alt={cam.name}
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                     onError={(e) => {
+                      if (!isOnline) return
+                      const target = e.target
                       setTimeout(() => {
-                        if (e.target) e.target.src = `${streamUrl(cam.id)}?t=${Date.now()}`
-                      }, 1200)
+                        if (target) target.src = `${streamUrl(cam.id)}?t=${Date.now()}`
+                      }, 1500)
                     }}
                   />
                 ) : (

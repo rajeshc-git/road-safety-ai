@@ -1,0 +1,9 @@
+# CPU Fallback Override
+# Automatically applied by run.bat when no NVIDIA GPU or NVIDIA container runtime is detected.
+services:
+
+  backend:
+    deploy:
+      resources:
+        reservations:
+          devices: []

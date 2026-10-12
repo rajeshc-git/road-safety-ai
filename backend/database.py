@@ -73,6 +73,9 @@ DEFAULT_SETTINGS = {
 def init_db():
     """Synchronous one-time init at startup."""
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=15000;")
         conn.executescript(SCHEMA)
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
@@ -83,13 +86,13 @@ def init_db():
 
 
 # ── Async helpers ─────────────────────────────────────────────────────────────
-async def get_db():
-    return await aiosqlite.connect(DB_PATH)
+def get_db():
+    return aiosqlite.connect(DB_PATH, timeout=15.0)
 
 
 # ── Cameras ───────────────────────────────────────────────────────────────────
 async def get_all_cameras() -> List[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM cameras ORDER BY id") as cur:
             rows = await cur.fetchall()
@@ -97,7 +100,7 @@ async def get_all_cameras() -> List[Dict]:
 
 
 async def get_camera(cam_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM cameras WHERE id=?", (cam_id,)) as cur:
             row = await cur.fetchone()
@@ -105,7 +108,7 @@ async def get_camera(cam_id: int) -> Optional[Dict]:
 
 
 async def upsert_camera(data: Dict) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         cam_type = data.get("cam_type", data.get("type", "webcam"))
         if "id" in data and data["id"]:
             await db.execute(
@@ -136,7 +139,7 @@ async def upsert_camera(data: Dict) -> int:
 
 
 async def update_camera_status(cam_id: int, status: str, resolution: str = None, fps: float = None):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         if resolution and fps:
             await db.execute(
                 "UPDATE cameras SET status=?, resolution=?, fps=? WHERE id=?",
@@ -148,7 +151,7 @@ async def update_camera_status(cam_id: int, status: str, resolution: str = None,
 
 
 async def update_camera_config(cam_id: int, config: Dict):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         # Read existing config and MERGE (don't replace) to preserve stop_line etc.
         async with db.execute("SELECT config_json FROM cameras WHERE id=?", (cam_id,)) as cur:
             row = await cur.fetchone()
@@ -163,7 +166,7 @@ async def update_camera_config(cam_id: int, config: Dict):
 
 
 async def delete_camera(cam_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         await db.execute("DELETE FROM cameras WHERE id=?", (cam_id,))
         await db.commit()
 
@@ -178,7 +181,7 @@ async def insert_event(
     metadata: Dict = None,
 ) -> int:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         cur = await db.execute(
             """INSERT INTO events (camera_id, camera_name, timestamp, event_type,
                vehicle_id, status, snapshot_path, metadata_json)
@@ -219,7 +222,7 @@ async def get_events(
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(f"SELECT COUNT(*) FROM events {where}", params) as cur:
             total = (await cur.fetchone())[0]
@@ -263,7 +266,7 @@ async def get_event_ids(
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         async with db.execute(f"SELECT id FROM events {where} ORDER BY timestamp DESC", params) as cur:
             rows = await cur.fetchall()
             return [r[0] for r in rows]
@@ -272,7 +275,7 @@ async def get_event_ids(
 async def get_event_stats() -> Dict:
     today = datetime.now().strftime("%Y-%m-%d")
     week_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         async with db.execute(
             "SELECT COUNT(*) FROM events WHERE timestamp>=?", (today,)
         ) as cur:
@@ -298,7 +301,7 @@ async def get_event_stats() -> Dict:
 
 
 async def update_event_status(event_id: int, status: str):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         await db.execute("UPDATE events SET status=? WHERE id=?", (status, event_id))
         await db.commit()
 
@@ -308,7 +311,7 @@ async def delete_event(event_id: int):
     """Delete a single event and its snapshot file."""
     from config import SNAPSHOTS_DIR
     import minio_service
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         async with db.execute("SELECT snapshot_path, metadata_json FROM events WHERE id=?", (event_id,)) as cur:
             row = await cur.fetchone()
         if row and row[0]:
@@ -334,7 +337,7 @@ async def delete_events_bulk(ids: list):
     if not ids:
         return
     placeholders = ",".join("?" for _ in ids)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         async with db.execute(f"SELECT snapshot_path, metadata_json FROM events WHERE id IN ({placeholders})", ids) as cur:
             rows = await cur.fetchall()
         for row in rows:
@@ -358,7 +361,7 @@ async def delete_all_events() -> int:
     """Delete ALL events and clean up all snapshot files."""
     from config import SNAPSHOTS_DIR
     import minio_service
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         async with db.execute("SELECT COUNT(*) FROM events") as cur:
             count = (await cur.fetchone())[0]
         async with db.execute("SELECT snapshot_path FROM events") as cur:
@@ -378,7 +381,7 @@ async def delete_all_events() -> int:
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 async def get_settings() -> Dict:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT key, value FROM settings") as cur:
             rows = await cur.fetchall()
@@ -386,7 +389,7 @@ async def get_settings() -> Dict:
 
 
 async def save_settings(data: Dict):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         for key, value in data.items():
             await db.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
@@ -397,7 +400,7 @@ async def save_settings(data: Dict):
 
 async def reset_database():
     from config import SNAPSHOTS_DIR
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with get_db() as db:
         await db.execute("DELETE FROM cameras")
         await db.execute("DELETE FROM events")
         await db.execute("DELETE FROM settings")

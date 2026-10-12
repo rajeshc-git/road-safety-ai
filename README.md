@@ -35,89 +35,34 @@
 
 ---
 
-## 🚀 Option 1: Running with Docker (Recommended)
+## 🚀 1-Click Launch with Docker (Zero Host Dependencies)
 
-Running the system via Docker starts the entire microservice stack (Backend, Frontend, Redis, and MinIO) with unified networking and persistent volume mounts.
+The entire microservice stack (Backend with PyTorch CUDA, React Frontend, Redis, MinIO) runs fully containerized. You do **not** need Python, `.venv`, Bun/Node, or CUDA Toolkit installed on your host machine.
 
 ### 📋 Prerequisites
-* Install [Docker](https://www.docker.com/products/docker-desktop/)
-* Install [Docker Compose](https://docs.docker.com/compose/install/)
+* [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed on Windows / Linux / macOS.
+* *(Optional)* Any NVIDIA GPU (RTX 50xx, 40xx, 30xx, 20xx, GTX 16xx) with standard NVIDIA display drivers.
 
-### 🛠️ Execution Steps
-1. Open a terminal in the project root folder.
-2. Build and launch the containers:
-   ```bash
-   docker-compose up --build
-   ```
-3. Once running, access the services:
-   * **Interactive Dashboard (Frontend):** [http://localhost:3000](http://localhost:3000)
-   * **REST API Documentation:** [http://localhost:8000/docs](http://localhost:8000/docs)
-   * **Backend REST API:** [http://localhost:8000](http://localhost:8000)
-   * **MinIO Storage Console:** [http://localhost:9001](http://localhost:9001) *(User: `minioadmin` / Pass: `minioadmin123`)*
-   * **Redis Server:** `localhost:6379`
+### ⚡ Quick Start
+1. Double-click **`run.bat`** (or execute `./run.bat` in a terminal).
+2. The launcher automatically:
+   - Detects Docker (and starts Docker Desktop if inactive).
+   - Detects any NVIDIA GPU and enables PyTorch CUDA 12.4 container acceleration.
+   - Falls back gracefully to optimized multi-threaded CPU inference if no NVIDIA GPU is available.
+   - Builds and starts all 4 microservices via Docker Compose.
+   - Opens your browser directly at [http://localhost:3000](http://localhost:3000).
+
+### 🌐 Service Endpoints
+* **Unified Dashboard (Frontend):** [http://localhost:9999](http://localhost:9999)
+
+* **AI Engine REST API:** [http://localhost:8000](http://localhost:8000)
+* **Interactive API Documentation:** [http://localhost:8000/docs](http://localhost:8000/docs)
+* **MinIO Storage Console:** [http://localhost:9001](http://localhost:9001) *(Credentials: `minioadmin` / `minioadmin123`)*
+* **Redis Stream Cache:** `localhost:6379`
 
 ### 💾 Data Persistence
-The SQLite database, MinIO object buckets (`./data/minio`), Redis dumps (`./data/redis`), and camera configurations are automatically bound and persisted locally inside the `./data` directory in your workspace.
+All violation snapshots (`./data/snapshots`), camera configs, SQLite database (`./data/safety_stop.db`), MinIO objects (`./data/minio`), and Redis records (`./data/redis`) are mounted and persisted locally in the `./data` folder.
 
----
-
-## 🐍 Option 2: Running without Docker (Local Setup)
-
-If you prefer running the code directly on your host machine, follow these steps to configure Python and Node.js.
-
-### 📋 Prerequisites
-Ensure you have the following installed:
-1. **Python 3.10 or 3.11**
-2. **Bun 1.4.2+** *(or Node.js 18+ & npm)*
-
----
-
-### 📦 Step 1: Install Dependencies
-
-#### 1. Python Backend
-Open a terminal in the project root folder and install Python dependencies:
-```bash
-pip install -r backend/requirements.txt
-```
-
-#### 2. Frontend (Bun)
-Navigate to the `frontend/` directory, install packages, and compile the production bundle:
-```bash
-cd frontend
-bun install
-bun run build
-```
-
----
-
-### ⚡ Step 2: Run the System
-
-#### A. One-Click Autonomous Startup (Windows)
-Double-click the **`run.bat`** script in the project root directory. This:
-* Auto-installs missing Python backend dependencies and Bun if needed.
-* Auto-compiles the optimized `frontend/dist` production bundle.
-* Auto-starts background **Redis** and **MinIO** Docker containers if Docker is available.
-* Starts the FastAPI backend AI engine (serving the production SPA directly on port `8000`).
-* Starts the high-speed production frontend server on port `3000`.
-* Automatically launches [http://localhost:3000](http://localhost:3000) in your default web browser.
-
-#### B. Manual Startup (All Platforms)
-Run both servers concurrently in separate terminals:
-
-1. **Start the AI Backend + Unified Dashboard:**
-   From the **project root folder**, run:
-   ```bash
-   python run.py
-   ```
-   *Serves the backend AI engine, WebRTC video feeds, and the compiled production SPA at [http://localhost:8000](http://localhost:8000).*
-
-2. **Start the Production Frontend Server:**
-   Open a **separate terminal window**, navigate to `frontend/` and run:
-   ```bash
-   cd frontend
-   bun run start
-   ```
-   *Serves the high-performance production build at [http://localhost:3000](http://localhost:3000).*
 
 ---
 

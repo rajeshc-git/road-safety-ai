@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Dict, Optional, Set, Callable, Any
 
+# pyrefly: ignore [missing-import]
 import cv2 as cv
 try:
     cv.utils.logging.setLogLevel(cv.utils.logging.LOG_LEVEL_SILENT)
@@ -143,6 +144,18 @@ class CameraManager:
     async def _start_stream(self, cam: dict):
         cam_id = cam["id"]
         config = json.loads(cam.get("config_json", "{}"))
+
+        # Stop previous stream cleanly if one already exists for this camera
+        old_stream = None
+        with self._lock:
+            old_stream = self._streams.pop(cam_id, None)
+
+        if old_stream:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(old_stream.stop, 0.8), timeout=1.5)
+            except Exception:
+                pass
+
         stream = CameraStream(
             camera_id=cam_id,
             camera_name=cam["name"],
@@ -158,47 +171,73 @@ class CameraManager:
         stream.has_subscribers = (mjpeg_count > 0 or ws_count > 0)
 
         with self._lock:
-            if cam_id in self._streams:
-                self._streams[cam_id].stop()
             self._streams[cam_id] = stream
+
+        # Record online status in DB
+        await db.update_camera_status(cam_id, "online")
+
         stream.start()
 
-        # Wait briefly to check if stream opened
-        await asyncio.sleep(1.5)
-        if stream.is_running:
-            w, h = stream.frame_size
-            await db.update_camera_status(cam_id, "online", f"{w}x{h}", stream.fps_actual or 25)
-        else:
+        # Non-blocking startup confirmation in background to confirm dimensions & actual FPS
+        async def _confirm_startup():
+            for _ in range(15):
+                await asyncio.sleep(0.1)
+                with self._lock:
+                    if self._streams.get(cam_id) is not stream:
+                        return
+                if stream.is_running:
+                    w, h = stream.frame_size
+                    await db.update_camera_status(cam_id, "online", f"{w}x{h}", stream.fps_actual or 25)
+                    return
+            with self._lock:
+                if self._streams.get(cam_id) is stream and not stream.is_running:
+                    self._streams.pop(cam_id, None)
             await db.update_camera_status(cam_id, "offline")
+
+        asyncio.create_task(_confirm_startup())
 
     async def remove_camera(self, cam_id: int):
         with self._lock:
-            if cam_id in self._streams:
-                self._streams[cam_id].stop()
-                del self._streams[cam_id]
+            stream = self._streams.pop(cam_id, None)
+            self._mjpeg_viewers[cam_id] = 0
+        if stream:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(stream.stop, 0.8), timeout=1.5)
+            except Exception:
+                pass
         await db.delete_camera(cam_id)
 
     async def start_detection(self, cam_id: int):
+        with self._lock:
+            existing = self._streams.get(cam_id)
+            if existing and existing.is_running:
+                return
         cam = await db.get_camera(cam_id)
         if cam:
             await self._start_stream(cam)
 
     async def switch_active_stream(self, cam_id: int):
-        """Stops all other camera streams and starts only the requested camera stream to focus CPU on current feed."""
+        """Stops all other camera streams concurrently and starts only the requested camera stream."""
         with self._lock:
             other_ids = [cid for cid in list(self._streams.keys()) if cid != cam_id]
-        for old_id in other_ids:
-            await self.stop_detection(old_id)
+        if other_ids:
+            await asyncio.gather(*(self.stop_detection(old_id) for old_id in other_ids), return_exceptions=True)
         await self.start_detection(cam_id)
 
     async def stop_detection(self, cam_id: int):
         with self._lock:
             stream = self._streams.pop(cam_id, None)
-            if stream:
-                stream.stop()
+            self._mjpeg_viewers[cam_id] = 0
+
+        if stream:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(stream.stop, 0.8), timeout=1.5)
+            except Exception:
+                pass
+
         await db.update_camera_status(cam_id, "offline")
         try:
-            await webrtc_service.close_camera_webrtc_connections(cam_id)
+            await asyncio.wait_for(webrtc_service.close_camera_webrtc_connections(cam_id), timeout=0.5)
         except Exception:
             pass
 
@@ -228,34 +267,42 @@ class CameraManager:
 
     # ── Auto-detect webcams ───────────────────────────────────────────────────
     async def auto_detect_cameras(self) -> list:
-        """Check connected webcams safely without noisy backend logging."""
+        """Check connected webcams safely in a worker thread without blocking the event loop."""
         existing = await db.get_all_cameras()
         existing_sources = {str(c["source"]) for c in existing}
+
+        def _scan_devices():
+            found_indices = []
+            backend = cv.CAP_DSHOW if os.name == "nt" else cv.CAP_ANY
+            for idx in range(3):
+                if str(idx) in existing_sources:
+                    continue
+                try:
+                    cap = cv.VideoCapture(idx, backend)
+                    if cap.isOpened():
+                        cap.release()
+                        found_indices.append(idx)
+                    else:
+                        if idx >= 1 and not found_indices:
+                            break
+                except Exception:
+                    pass
+            return found_indices
+
+        new_indices = await asyncio.to_thread(_scan_devices)
         found = []
-        backend = cv.CAP_DSHOW if os.name == "nt" else cv.CAP_ANY
-        for idx in range(3):
-            if str(idx) in existing_sources:
-                continue
-            try:
-                cap = cv.VideoCapture(idx, backend)
-                if cap.isOpened():
-                    cap.release()
-                    cam_data = {
-                        "name": f"Camera {idx}",
-                        "source": str(idx),
-                        "cam_type": "webcam",
-                        "status": "offline",
-                        "config": {},
-                    }
-                    cam_id = await db.upsert_camera(cam_data)
-                    cam_data["id"] = cam_id
-                    result = await db.get_camera(cam_id)
-                    found.append(result)
-                else:
-                    if idx >= 1 and not found:
-                        break
-            except Exception:
-                pass
+        for idx in new_indices:
+            cam_data = {
+                "name": f"Camera {idx}",
+                "source": str(idx),
+                "cam_type": "webcam",
+                "status": "offline",
+                "config": {},
+            }
+            cam_id = await db.upsert_camera(cam_data)
+            cam_data["id"] = cam_id
+            result = await db.get_camera(cam_id)
+            found.append(result)
         return found
 
     async def load_existing_cameras(self):

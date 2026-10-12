@@ -14,13 +14,25 @@ SNAPSHOTS_DIR    = DATA_DIR / "snapshots"
 TEST_VIDEOS_DIR  = DATA_DIR / "test_videos"
 DB_PATH          = DATA_DIR / "safety_stop.db"
 
-# YOLO model: look in project-local data/models/ first, then sibling 'yolo weights' folder
-_local_model = DATA_DIR / "models" / "yolov8n.pt"
+# YOLO model: check backend folder, local data/models, sibling folder, or auto-download name
+_backend_model = BASE_DIR / "backend" / "yolov8n.pt"
+_local_model   = DATA_DIR / "models" / "yolov8n.pt"
 _sibling_model = BASE_DIR.parent / "yolo weights" / "yolov8n.pt"
-YOLO_MODEL_PATH = _local_model if _local_model.exists() else _sibling_model
+
+if _backend_model.exists():
+    YOLO_MODEL_PATH = _backend_model
+elif _local_model.exists():
+    YOLO_MODEL_PATH = _local_model
+elif _sibling_model.exists():
+    YOLO_MODEL_PATH = _sibling_model
+else:
+    YOLO_MODEL_PATH = "yolov8n.pt"
 
 # DMS-specific YOLO model (custom 8-class driver behavior detection)
-DMS_YOLO_MODEL_PATH = BASE_DIR / "best.pt"
+_root_best = BASE_DIR / "best.pt"
+_backend_best = BASE_DIR / "backend" / "best.pt"
+DMS_YOLO_MODEL_PATH = _root_best if _root_best.exists() else _backend_best
+
 
 
 # Make required directories

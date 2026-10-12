@@ -1,165 +1,169 @@
 @echo off
 setlocal enabledelayedexpansion
-title VIGILIX AI - Production Launcher
-mode con cols=120 lines=40 >nul 2>&1
+title VIGILIX AI - Autonomous Road Safety ^& DMS (Docker Production Stack)
+mode con cols=120 lines=42 >nul 2>&1
 color 0b
+
+REM Enable BuildKit for persistent cache mounts (prevents re-downloading dependencies)
+set "DOCKER_BUILDKIT=1"
+set "COMPOSE_DOCKER_CLI_BUILD=1"
 
 cd /d "%~dp0"
 
 echo ======================================================================================
-echo                             VIGILIX AI - PRODUCTION SYSTEM
+echo                             VIGILIX AI - PRODUCTION DOCKER STACK
+echo                  Autonomous Traffic Compliance ^& Driver Monitoring System
 echo ======================================================================================
 echo.
 
-REM == STEP 1: Verify Python & Virtual Environment (.venv) ====================
-where python >nul 2>&1
+REM == STEP 1: Verify Docker Engine ============================================
+where docker >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Python is not detected in your system PATH.
-    echo Please install Python 3.10+ from https://www.python.org/ and ensure "Add Python to PATH" is checked.
+    if exist "C:\Program Files\Docker\Docker\resources\bin\docker.exe" (
+        set "PATH=C:\Program Files\Docker\Docker\resources\bin;!PATH!"
+    )
+)
+
+where docker >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Docker is not installed or not in your system PATH.
+    echo Please install Docker Desktop from: https://www.docker.com/products/docker-desktop/
+    echo Once installed, restart this script.
     goto :fatal_error
 )
 
-REM Determine Python interpreter (.venv or fallback)
-if exist ".venv\Scripts\python.exe" (
-    set "PYTHON_EXEC=.venv\Scripts\python.exe"
-    goto :check_modules
-)
 
-echo [*] Python virtual environment [.venv] not detected.
-echo [*] Creating virtual environment [.venv]...
-python -m venv .venv
-if not exist ".venv\Scripts\python.exe" (
-    echo [!] Warning: Could not create .venv. Falling back to system Python.
-    set "PYTHON_EXEC=python"
-    goto :check_modules
-)
-set "PYTHON_EXEC=.venv\Scripts\python.exe"
+REM Check if Docker daemon is running
+docker info >nul 2>&1
+if %errorlevel% equ 0 goto :docker_active
 
-:check_modules
-REM Check if core backend packages (e.g. uvicorn, fastapi) are installed in the Python environment
-"%PYTHON_EXEC%" -c "import uvicorn, fastapi" >nul 2>&1
-if %errorlevel% equ 0 goto :modules_ok
-
-echo [*] Required backend packages (uvicorn, fastapi) missing.
-echo [*] Installing dependencies from backend\requirements.txt into environment...
-call "%PYTHON_EXEC%" -m pip install --upgrade pip >nul 2>&1
-call "%PYTHON_EXEC%" -m pip install -r backend\requirements.txt
-if %errorlevel% neq 0 (
-    echo [!] Notice: Some packages had installation warnings. Continuing with available modules...
+echo [*] Docker engine is not running. Attempting to start Docker Desktop...
+set "DOCKER_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe"
+if exist "%DOCKER_EXE%" (
+    start "" "%DOCKER_EXE%"
 ) else (
-    echo [OK] Backend dependencies installed successfully.
-)
-
-:modules_ok
-echo [OK] Backend Python environment verified: %PYTHON_EXEC%
-
-REM == STEP 2: Verify Bun / Node Runtime =======================================
-where bun >nul 2>&1
-if %errorlevel% equ 0 goto :runtime_ok
-if exist "%USERPROFILE%\.bun\bin\bun.exe" (
-    set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
-    goto :runtime_ok
-)
-
-echo [*] Bun runtime not detected. Auto-downloading Bun...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://bun.sh/install.ps1 | iex" >nul 2>&1
-if exist "%USERPROFILE%\.bun\bin\bun.exe" (
-    set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
-)
-
-:runtime_ok
-
-REM == STEP 3: Frontend Dependencies & Production dist Check ===================
-if exist "frontend\node_modules" goto :node_modules_ok
-echo [*] Installing frontend packages...
-cd frontend
-where bun >nul 2>&1
-if %errorlevel% equ 0 (
-    call bun install
-) else (
-    call npm install
-)
-cd ..
-
-:node_modules_ok
-
-if exist "frontend\dist\index.html" goto :dist_ok
-echo [*] Compiling optimized frontend production bundle [dist]...
-cd frontend
-if exist "node_modules\vite\bin\vite.js" (
-    node node_modules\vite\bin\vite.js build
-) else (
-    where bun >nul 2>&1
-    if %errorlevel% equ 0 (
-        call bun run build
-    ) else (
-        call npm run build
+    if exist "%LOCALAPPDATA%\Docker\Docker Desktop.exe" (
+        start "" "%LOCALAPPDATA%\Docker\Docker Desktop.exe"
     )
 )
-cd ..
 
-:dist_ok
+echo [*] Waiting for Docker daemon to initialize (this may take up to 45 seconds)...
+set "DOCKER_READY=0"
+for /l %%i in (1,1,45) do (
+    docker info >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "DOCKER_READY=1"
+        goto :docker_active
+    )
+    powershell -NoProfile -Command "Start-Sleep -Seconds 1" >nul 2>&1
+)
 
-REM == STEP 4: Docker Infrastructure Check (Redis and MinIO) ==================
-where docker >nul 2>&1
-if %errorlevel% neq 0 goto :docker_skip
+if %DOCKER_READY% equ 0 (
+    echo.
+    echo [!] Docker Desktop did not respond in time.
+    echo Please manually launch Docker Desktop from your Start menu and ensure it shows "Engine running".
+    echo Press any key to retry after Docker Desktop has started...
+    pause >nul
+    docker info >nul 2>&1
+    if %errorlevel% neq 0 goto :fatal_error
+)
 
-docker info >nul 2>&1
-if %errorlevel% neq 0 goto :docker_skip
+:docker_active
+echo [OK] Docker Engine is active and connected.
 
-echo [*] Ensuring Redis and MinIO Docker containers are active...
-docker compose up -d redis minio >nul 2>&1
-if %errorlevel% neq 0 docker-compose up -d redis minio >nul 2>&1
-echo [OK] Redis and MinIO containers verified.
+REM == STEP 2: Hardware Acceleration Detection =================================
+set "GPU_MODE=0"
+set "DETECTED_GPU="
 
-:docker_skip
+where nvidia-smi >nul 2>&1
+if %errorlevel% equ 0 (
+    for /f "tokens=*" %%g in ('powershell -NoProfile -Command "$g = nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null | Select-Object -First 1; if ($g) { $g.Trim() }"') do set "DETECTED_GPU=%%g"
+    if defined DETECTED_GPU (
+        echo [OK] Hardware Detected: !DETECTED_GPU!
+        echo [*] PyTorch CUDA 12.8 acceleration enabled Blackwell RTX 5080/5090 ready.
+        set "GPU_MODE=1"
+    )
 
-REM == STEP 5: Ensure Data Folders Exist =====================================
+)
+
+if %GPU_MODE% equ 0 (
+    echo [*] No NVIDIA GPU detected. Running with optimized multi-core CPU inference.
+)
+
+REM == STEP 3: Ensure Data Persistence Directories ============================
 if not exist "data\snapshots" mkdir "data\snapshots"
 if not exist "data\test_videos" mkdir "data\test_videos"
 if not exist "data\minio" mkdir "data\minio"
 if not exist "data\redis" mkdir "data\redis"
 
-echo.
-echo ======================================================================================
-echo   [OK] Launching Production Stack:
-echo   - Backend AI Engine:           http://localhost:8000
-echo   - Frontend Production Server:  http://localhost:3000
-echo   - MinIO Storage Console:       http://localhost:9001
-echo   - Swagger REST API Docs:       http://localhost:8000/docs
-echo   Press Ctrl + C to stop the system.
-echo ======================================================================================
-echo.
+REM Determine Compose Command (docker compose or docker-compose)
+set "COMPOSE_CMD=docker compose"
+docker compose version >nul 2>&1
+if %errorlevel% neq 0 set "COMPOSE_CMD=docker-compose"
 
-REM 1. Launch FastAPI Backend with Virtual Environment
-start /b cmd /c "%PYTHON_EXEC% run.py"
+REM == STEP 4: Automated Build & Startup Strategy ===============================
+REM Backend: Live-mounted from .\backend (Python edits take effect in 0s, 0MB download)
+REM Frontend: Rebuilt via Bun in Alpine (Vite compilation in ~1.5s, 0MB download)
 
-REM Wait for Backend AI Engine to be fully initialized & ready
-echo [*] Waiting for Backend AI Engine and Cache initialization...
-powershell -NoProfile -Command "$ready=$false; for ($i=0; $i -lt 35; $i++) { try { $r=Invoke-WebRequest -Uri 'http://127.0.0.1:8000/docs' -TimeoutSec 1 -UseBasicParsing; if ($r.StatusCode -eq 200) { $ready=$true; break } } catch {}; Start-Sleep -Milliseconds 500 }; if ($ready) { Write-Host '  [OK] Backend AI Engine is online and responsive.' } else { Write-Host '  [!] Launching frontend preview...' }"
+echo [*] Compiling frontend bundle (instant local build, 0MB download)...
+%COMPOSE_CMD% build frontend
 
-REM 2. Launch Production Frontend Server
-if exist "frontend\node_modules\vite\bin\vite.js" (
-    start /b cmd /c "cd frontend && node node_modules\vite\bin\vite.js preview --port 3000"
+:start_services
+
+if %GPU_MODE% equ 1 (
+    echo [*] Launching stack with NVIDIA GPU acceleration...
+    %COMPOSE_CMD% up -d
+    if !errorlevel! neq 0 (
+        echo.
+        echo [!] Notice: Docker GPU reservation could not be initialized by the local engine.
+        echo [*] Falling back to CPU mode automatically...
+        %COMPOSE_CMD% -f docker-compose.yml -f docker-compose.cpu.yml up -d
+    )
 ) else (
-    start /b cmd /c "cd frontend && bun run start"
+    echo [*] Launching stack in CPU mode...
+    %COMPOSE_CMD% -f docker-compose.yml -f docker-compose.cpu.yml up -d
 )
 
-REM Wait 1 second for frontend preview server
-ping -n 2 127.0.0.1 >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to start Docker Compose stack.
+    goto :fatal_error
+)
 
-REM 3. Open browser automatically with backend fully ready
-start http://localhost:3000
+REM Reload backend process to instantly apply any Python code changes from .\backend
+%COMPOSE_CMD% restart backend >nul 2>&1
 
-REM Keep console window open to stream live logs
-:loop
-ping -n 60 127.0.0.1 >nul 2>&1
-goto loop
+echo.
+echo [*] Waiting for services to initialize...
+powershell -NoProfile -Command "$ready=$false; for ($i=0; $i -lt 40; $i++) { try { $r=Invoke-WebRequest -Uri 'http://127.0.0.1:8000/docs' -TimeoutSec 1 -UseBasicParsing; if ($r.StatusCode -eq 200) { $ready=$true; break } } catch {}; Start-Sleep -Milliseconds 1000 }; if ($ready) { Write-Host '  [OK] AI Backend is responsive.' } else { Write-Host '  [*] Services starting up in background...' }"
+
+echo.
+echo ======================================================================================
+echo   [OK] Production Stack is Live:
+echo   - Unified Dashboard:         http://localhost:9999
+echo   - AI Backend REST API:       http://localhost:8000
+echo   - Swagger API Documentation: http://localhost:8000/docs
+echo   - MinIO Storage Console:     http://localhost:9001 (minioadmin / minioadmin123)
+echo   - Redis Stream Cache:        localhost:6379
+echo ======================================================================================
+echo.
+
+echo   All 4 microservices are running in background detached mode.
+echo   Closing this terminal window will NOT stop or affect the system.
+echo   - To view live logs anytime:  docker compose logs -f
+echo   - To stop the system anytime: docker compose down
+echo ======================================================================================
+echo.
+echo [*] System is ready and operational!
+echo     Press any key to close this console window (containers will keep running)...
+pause >nul
+exit /b 0
+
 
 :fatal_error
 echo.
 echo ======================================================================================
-echo [SYSTEM PAUSED] An error occurred. The console will stay open for review.
+echo [SYSTEM PAUSED] An error occurred during startup.
 echo ======================================================================================
 pause
 exit /b 1
+

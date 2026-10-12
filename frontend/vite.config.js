@@ -7,7 +7,7 @@ const backendWsTarget = backendTarget.replace(/^http/, 'ws')
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3000,
+    port: 9999,
     host: true, // Listen on all addresses (required for Docker port forwarding)
     allowedHosts: ['cooper-ment-jeans-passes.trycloudflare.com', 'localhost', '127.0.0.1'],
     proxy: {
@@ -20,7 +20,7 @@ export default defineConfig({
     outDir: 'dist',
   },
   preview: {
-    port: 3000,
+    port: 9999,
     host: true,
     allowedHosts: ['cooper-ment-jeans-passes.trycloudflare.com', 'localhost', '127.0.0.1'],
     proxy: {
@@ -28,5 +28,6 @@ export default defineConfig({
       '/ws': { target: backendWsTarget, ws: true },
     },
   },
+
 })
 

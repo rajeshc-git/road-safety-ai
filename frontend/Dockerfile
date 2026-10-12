@@ -1,23 +1,35 @@
-FROM oven/bun:1.4.2-alpine
+# syntax=docker/dockerfile:1
 
-# Set working directory
+# ── Stage 1: Build production dist bundle ──────────────────────────────────────
+FROM oven/bun:1.4.2-alpine AS builder
+
 WORKDIR /app
 
-# Copy package configuration files and lockfiles
+# Copy dependency specifications and lockfiles
 COPY package*.json ./
 COPY bun.lock* ./
 
-# Install dependencies using Bun 1.4.2
-RUN bun install
+# Install dependencies — cached across rebuilds via BuildKit mount
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
 
-# Copy frontend source files
+# Copy source code and config files
 COPY . .
 
-# Build optimized production bundle
+# Compile optimized production dist bundle (no dev server)
 RUN bun run build
 
-# Expose the frontend port
-EXPOSE 3000
+# ── Stage 2: Serve compiled dist with ultra-lightweight Nginx ───────────────────
+FROM nginx:alpine
 
-# Start optimized production server via Bun
-CMD ["bun", "run", "start", "--host", "0.0.0.0"]
+# Copy custom Nginx reverse proxy configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy production dist output from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Expose production port
+EXPOSE 9999
+
+# Start Nginx in foreground
+CMD ["nginx", "-g", "daemon off;"]

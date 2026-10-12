@@ -1,6 +1,5 @@
-version: '3.8'
-
 services:
+
   redis:
     image: redis:7-alpine
     container_name: safety-stop-redis
@@ -25,6 +24,7 @@ services:
     restart: always
 
   backend:
+    image: road-safety-ai-backend:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -41,22 +41,37 @@ services:
       - MINIO_SECURE=false
       - MINIO_BUCKET=safety-violations
       - WEBRTC_ENABLED=true
+      - YOLO_CONFIG_DIR=/tmp/Ultralytics
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+
     volumes:
       - ./data:/app/data
+      - ./best.pt:/app/best.pt:ro
+      - ./backend:/app/backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       - redis
       - minio
     restart: always
 
   frontend:
+    image: road-safety-ai-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: safety-stop-frontend
     ports:
-      - "3000:3000"
-    environment:
-      - VITE_BACKEND_URL=http://backend:8000
+      - "9999:9999"
     depends_on:
       - backend
     restart: always
+
+
+

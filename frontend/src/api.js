@@ -1,10 +1,21 @@
 const BASE = ''  // Vite proxy handles /api → http://localhost:8000
 
+const fetchWithTimeout = (url, options = {}, timeoutMs = 8000) => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer))
+}
+
 export const api = {
-  get: (u) => fetch(BASE + u).then(r => { if (!r.ok) throw r; return r.json() }),
-  post: (u, d) => fetch(BASE + u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d ?? {}) }).then(r => r.json()),
-  put: (u, d) => fetch(BASE + u, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d ?? {}) }).then(r => r.json()),
-  del: (u) => fetch(BASE + u, { method: 'DELETE' }).then(r => r.json()),
+  get: (u, timeoutMs = 8000) =>
+    fetchWithTimeout(BASE + u, {}, timeoutMs).then(r => { if (!r.ok) throw r; return r.json() }),
+  post: (u, d, timeoutMs = 8000) =>
+    fetchWithTimeout(BASE + u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d ?? {}) }, timeoutMs).then(r => { if (!r.ok) throw r; return r.json() }),
+  put: (u, d, timeoutMs = 8000) =>
+    fetchWithTimeout(BASE + u, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d ?? {}) }, timeoutMs).then(r => { if (!r.ok) throw r; return r.json() }),
+  del: (u, timeoutMs = 8000) =>
+    fetchWithTimeout(BASE + u, { method: 'DELETE' }, timeoutMs).then(r => { if (!r.ok) throw r; return r.json() }),
 }
 
 export const streamUrl = (camId) => `/api/cameras/${camId}/stream`

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from './api'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
@@ -183,7 +183,6 @@ export default function App() {
         }).catch(() => {})
       } else {
         setCameras(cams)
-        setStreamKey(Date.now())
         
         // Perform smart activeCam state update without stale closure
         setActiveCam(current => {
@@ -236,6 +235,7 @@ export default function App() {
 
     // 3. Steady-state background polling
     const timers = [
+      setInterval(loadCameras, 5000),
       setInterval(loadStats, 10000),
       setInterval(loadEvents, 15000),
       setInterval(loadSystem, 8000),
@@ -251,8 +251,15 @@ export default function App() {
     setTelemetry({ attentionScore: 100.0, drowsinessLevel: 0.0, mode: 'traffic', fps: 25, width: 0, height: 0, active_violations: [] })
   }, [activeCam?.id])
 
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const loadEventsRef = useRef(loadEvents)
+  loadEventsRef.current = loadEvents
+  const loadStatsRef = useRef(loadStats)
+  loadStatsRef.current = loadStats
+
   useEffect(() => {
-    if (!activeCam) return
+    if (!activeCam?.id) return
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host
     const ws = new WebSocket(`${protocol}//${host}/ws/camera/${activeCam.id}`)
@@ -275,13 +282,14 @@ export default function App() {
         } else if (msg.type === 'violation') {
           // Sync state and notify pages immediately
           setEventTrigger(prev => prev + 1)
-          loadEvents()
-          loadStats()
+          loadEventsRef.current()
+          loadStatsRef.current()
 
           // Sound alarm beep
           if (msg.event_type && msg.event_type !== 'Did Not Stop') {
-            if (settings.dms_alert_beep !== 'false') {
-              playDmsBeep(msg.event_type, settings.dms_beeper_type || 'default')
+            const curSettings = settingsRef.current
+            if (curSettings.dms_alert_beep !== 'false') {
+              playDmsBeep(msg.event_type, curSettings.dms_beeper_type || 'default')
             }
           }
         }
@@ -293,7 +301,17 @@ export default function App() {
     return () => {
       ws.close()
     }
-  }, [activeCam, settings, loadEvents, loadStats])
+  }, [activeCam?.id])
+
+  const [streamLoading, setStreamLoading] = useState(false)
+
+  // Hard safety watchdog: streamLoading can NEVER remain true for > 3.5s under any circumstance
+  useEffect(() => {
+    if (streamLoading) {
+      const timer = setTimeout(() => setStreamLoading(false), 3500)
+      return () => clearTimeout(timer)
+    }
+  }, [streamLoading])
 
   const handleCamSwitch = useCallback(async (id) => {
     const targetCam = cameras.find(c => c.id === Number(id))
@@ -302,44 +320,58 @@ export default function App() {
     setStreamKey(Date.now())
     setStreamLoading(true)
 
+    // Optimistically activate target camera
+    setActiveCam(prev => prev && prev.id === targetCam.id ? { ...prev, status: 'online', runtime_status: { running: true } } : prev)
+    setCameras(prev => prev.map(c => c.id === targetCam.id ? { ...c, status: 'online', runtime_status: { running: true } } : c))
+
     try {
       // Focus 100% CPU on the active camera by stopping previous background cameras
-      await api.post(`/api/cameras/${targetCam.id}/detection/switch`)
-      await loadCameras()
+      await api.post(`/api/cameras/${targetCam.id}/detection/switch`, {}, 5000)
     } catch (e) {
       console.error("Auto-play on camera switch failed", e)
     } finally {
       setStreamLoading(false)
+      setTimeout(() => loadCameras().catch(() => {}), 300)
     }
   }, [cameras, loadCameras])
 
-  const [streamLoading, setStreamLoading] = useState(false)
-
   const handleStartDetection = async () => {
-    if (activeCam && !streamLoading) {
-      setStreamLoading(true)
-      try {
-        await api.post(`/api/cameras/${activeCam.id}/detection/start`)
-        await loadCameras()
-      } catch (e) {
-        console.error("Start detection failed", e)
-      } finally {
-        setStreamLoading(false)
-      }
+    if (!activeCam || streamLoading) return
+    const camId = activeCam.id
+    setStreamLoading(true)
+
+    // 1. Optimistic UI update: immediately mark camera as online so UI responds in 0ms
+    setActiveCam(prev => prev && prev.id === camId ? { ...prev, status: 'online', runtime_status: { running: true } } : prev)
+    setCameras(prev => prev.map(c => c.id === camId ? { ...c, status: 'online', runtime_status: { running: true } } : c))
+
+    try {
+      await api.post(`/api/cameras/${camId}/detection/start`, {}, 5000)
+    } catch (e) {
+      console.error("Start detection failed", e)
+    } finally {
+      setStreamKey(Date.now())
+      setStreamLoading(false)
+      setTimeout(() => loadCameras().catch(() => {}), 300)
     }
   }
 
   const handleStopDetection = async () => {
-    if (activeCam && !streamLoading) {
-      setStreamLoading(true)
-      try {
-        await api.post(`/api/cameras/${activeCam.id}/detection/stop`)
-        await loadCameras()
-      } catch (e) {
-        console.error("Stop detection failed", e)
-      } finally {
-        setStreamLoading(false)
-      }
+    if (!activeCam || streamLoading) return
+    const camId = activeCam.id
+    setStreamLoading(true)
+
+    // 1. Optimistic UI update: immediately mark camera as offline so UI updates in 0ms
+    // and live stream socket cleanly disconnects without leaving user stuck
+    setActiveCam(prev => prev && prev.id === camId ? { ...prev, status: 'offline', runtime_status: { running: false } } : prev)
+    setCameras(prev => prev.map(c => c.id === camId ? { ...c, status: 'offline', runtime_status: { running: false } } : c))
+
+    try {
+      await api.post(`/api/cameras/${camId}/detection/stop`, {}, 5000)
+    } catch (e) {
+      console.warn("Stop detection request notice:", e)
+    } finally {
+      setStreamLoading(false)
+      setTimeout(() => loadCameras().catch(() => {}), 300)
     }
   }
 

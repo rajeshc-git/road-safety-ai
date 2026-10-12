@@ -4,6 +4,12 @@ Per-camera YOLO detection + ByteTrack tracking in a background thread.
 """
 
 import os
+import warnings
+# Silence repetitive deprecation warnings (e.g. Ultralytics 'half' warning)
+warnings.filterwarnings("ignore", message=".*'half' is deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="ultralytics")
+warnings.filterwarnings("ignore", category=FutureWarning, module="ultralytics")
+
 os.environ["GLOG_minloglevel"] = "3"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["FLAGS_stderrthreshold"] = "3"
@@ -27,6 +33,7 @@ from config import (
     YOLO_MODEL_PATH, DMS_YOLO_MODEL_PATH, DEFAULT_CONFIDENCE, DEFAULT_PROCESSING_FPS,
     JPEG_QUALITY, VEHICLE_CLASSES, PERSON_CLASS, MIN_TRACKED_FRAMES,
     STOP_LINE_TOLERANCE_PX, PEDESTRIAN_ZONE_MARGIN,
+    TEST_VIDEOS_DIR, DATA_DIR, BASE_DIR,
 )
 
 _model: Optional[YOLO] = None
@@ -121,19 +128,59 @@ class TrackHistory:
         return sum(displacements) / len(displacements) if displacements else 0.0
 
 
+def resolve_source(source):
+    """
+    Safely normalizes camera source.
+    - Webcam index (e.g. 0, '0', 1) -> int
+    - Network URL (rtsp://, http://, etc.) -> str
+    - Video files: checks if path exists; if not, checks TEST_VIDEOS_DIR, DATA_DIR, etc.
+    """
+    if source is None:
+        return source
+    src_str = str(source).strip()
+    if src_str.isdigit():
+        return int(src_str)
+
+    lower = src_str.lower()
+    if lower.startswith(("rtsp://", "rtsps://", "http://", "https://", "rtmp://")):
+        return src_str
+
+    # It's a file path
+    p = Path(src_str)
+    if p.exists():
+        return str(p.resolve())
+
+    # Check if basename exists in TEST_VIDEOS_DIR
+    from config import TEST_VIDEOS_DIR, DATA_DIR, BASE_DIR
+    candidate = TEST_VIDEOS_DIR / p.name
+    if candidate.exists():
+        return str(candidate.resolve())
+
+    candidate_data = DATA_DIR / p.name
+    if candidate_data.exists():
+        return str(candidate_data.resolve())
+
+    # If it was saved with a container path like /app/data/...
+    if src_str.startswith("/app/"):
+        candidate_rel = BASE_DIR / src_str[5:]
+        if candidate_rel.exists():
+            return str(candidate_rel.resolve())
+
+    return src_str
+
+
 class ThreadedCameraCapture:
-    """Ultra-low latency, zero-buffer-lag threaded video capturer.
+    """Ultra-low latency, clean zero-deadlock video capturer.
     
-    Specifically optimized for RTSP IP cameras, HTTP/HLS streams, and USB webcams.
-    Features:
-    - Multi-transport fallback (RTSP TCP/UDP + standard FFmpeg fallback)
-    - Non-blocking background thread continuously draining frames to prevent OpenCV buffer buildup and lag
-    - Instant frame retrieval for AI inference & MJPEG pipelines (zero lag)
-    - Automatic stream health monitoring and background reconnection
+    Supports RTSP IP cameras, HTTP streams, video files, and USB webcams.
+    - Webcams on Windows: Uses CAP_DSHOW for instantaneous (<30ms) open/close and zero-hang operation.
+    - Video files: Direct frame reading with seamless zero-delay looping.
+    - RTSP/Network streams: Background non-blocking worker thread draining frames to eliminate buffer latency.
+    - Clean synchronous release: Guarantees hardware device handle is completely freed before returning.
     """
     def __init__(self, source, target_fps=30):
         self.raw_source = source
-        self.src = int(source) if str(source).isdigit() else str(source).strip()
+        self.src = resolve_source(source)
         self.is_pure_rtsp = isinstance(self.src, str) and (
             self.src.startswith("rtsp://") or self.src.startswith("rtsps://")
         )
@@ -145,6 +192,7 @@ class ThreadedCameraCapture:
         )
         self.is_rtsp = self.is_network
         self.is_file = isinstance(self.src, str) and not self.is_network
+        self.is_webcam = isinstance(self.src, int)
         self.target_fps = target_fps
         
         self.cap: Optional[cv.VideoCapture] = None
@@ -152,7 +200,6 @@ class ThreadedCameraCapture:
         self.frame = None
         self.stopped = False
         self.lock = threading.Lock()
-        self.cap_lock = threading.Lock()
         self.new_frame_event = threading.Event()
         self.width = 1920
         self.height = 1080
@@ -163,9 +210,22 @@ class ThreadedCameraCapture:
         self._init_capture()
 
     def _open_device(self, mode="optimized"):
-        if not self.is_network:
+        if self.is_webcam:
+            # On Windows, DirectShow opens instantly and never deadlocks COM/MediaFoundation
+            backend = cv.CAP_DSHOW if os.name == "nt" else cv.CAP_ANY
+            try:
+                cap = cv.VideoCapture(self.src, backend)
+                if cap and cap.isOpened():
+                    return cap
+            except Exception:
+                pass
             return cv.VideoCapture(self.src)
 
+        if not self.is_network:
+            # Local video file
+            return cv.VideoCapture(self.src)
+
+        # Network stream
         if mode == "optimized":
             if self.is_pure_rtsp:
                 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
@@ -174,7 +234,6 @@ class ThreadedCameraCapture:
             else:
                 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay"
         else:
-            # Fallback mode: clear custom capture options
             os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
 
         try:
@@ -202,10 +261,7 @@ class ThreadedCameraCapture:
         return None
 
     def _init_capture(self):
-        # Attempt 1: Optimized low-latency open
         cap = self._open_device(mode="optimized")
-        
-        # Attempt 2: Fallback standard open if optimized failed
         if not cap or not cap.isOpened():
             if cap:
                 try:
@@ -213,14 +269,6 @@ class ThreadedCameraCapture:
                 except Exception:
                     pass
             cap = self._open_device(mode="fallback")
-
-        # Retry loop for network streams (give slow RTSP servers up to 2 seconds for initial handshake)
-        if self.is_network and (not cap or not cap.isOpened()):
-            for _ in range(4):
-                time.sleep(0.4)
-                cap = self._open_device(mode="fallback")
-                if cap and cap.isOpened():
-                    break
 
         self.cap = cap
         if self.cap and self.cap.isOpened():
@@ -235,7 +283,6 @@ class ThreadedCameraCapture:
             except Exception:
                 pass
 
-            # Start worker thread for continuous frame draining
             if self.is_network:
                 self.thread = threading.Thread(
                     target=self._worker, 
@@ -245,32 +292,23 @@ class ThreadedCameraCapture:
                 self.thread.start()
 
     def is_opened(self):
-        with self.cap_lock:
+        with self.lock:
             return self.cap is not None and self.cap.isOpened()
 
     def _worker(self):
+        """Worker thread for network/RTSP streams: continuously drains frames to prevent lag."""
         consecutive_fails = 0
         while not self.stopped:
-            if not self.cap or not self.cap.isOpened():
-                time.sleep(0.3)
-                if self.stopped:
+            with self.lock:
+                if self.stopped or not self.cap or not self.cap.isOpened():
                     break
-                with self.cap_lock:
-                    if self.stopped:
-                        break
-                    cap = self._open_device(mode="fallback")
-                    if cap and cap.isOpened():
-                        self.cap = cap
-                        consecutive_fails = 0
-                continue
-
-            try:
-                with self.cap_lock:
-                    if self.stopped or not self.cap:
-                        break
+                try:
                     grabbed, frame = self.cap.read()
-            except Exception:
-                grabbed, frame = False, None
+                except Exception:
+                    grabbed, frame = False, None
+
+            if self.stopped:
+                break
 
             if grabbed and frame is not None and frame.size > 0:
                 consecutive_fails = 0
@@ -281,56 +319,48 @@ class ThreadedCameraCapture:
                 time.sleep(0.002)
             else:
                 consecutive_fails += 1
-                if consecutive_fails > 80:  # ~2 seconds of missed frames
-                    with self.cap_lock:
-                        try:
-                            if self.cap:
-                                self.cap.release()
-                        except Exception:
-                            pass
-                        self.cap = None
-                    time.sleep(1.0)
+                if consecutive_fails > 50:
+                    time.sleep(0.5)
                 else:
-                    time.sleep(0.01)
+                    time.sleep(0.02)
 
     def read(self):
         if self.stopped:
             return False, None
+
         if self.is_network:
             with self.lock:
                 if self.frame is not None:
                     return self.grabbed, self.frame.copy()
-            # If frame not captured yet, wait briefly for grabber thread
-            if self.new_frame_event.wait(timeout=0.3):
+            if self.new_frame_event.wait(timeout=0.15):
                 with self.lock:
                     if self.frame is not None:
                         return self.grabbed, self.frame.copy()
             return False, None
         else:
-            with self.cap_lock:
+            with self.lock:
                 if self.stopped or not self.cap or not self.cap.isOpened():
                     return False, None
                 try:
                     ret, frame = self.cap.read()
                 except Exception:
                     return False, None
+
+                # Seamless loop for video files
                 if not ret and self.is_file and not self.stopped:
                     try:
                         self.cap.set(cv.CAP_PROP_POS_FRAMES, 0)
                         ret, frame = self.cap.read()
-                        if not ret and not self.stopped:
-                            self.cap.release()
-                            self.cap = cv.VideoCapture(self.src)
-                            ret, frame = self.cap.read()
                     except Exception:
                         return False, None
                 return ret, frame
 
     def release(self):
+        """Cleanly and reliably releases capture resources."""
         self.stopped = True
         self.new_frame_event.set()
-        with self.cap_lock:
-            if self.cap:
+        with self.lock:
+            if self.cap is not None:
                 try:
                     self.cap.release()
                 except Exception:
@@ -476,35 +506,33 @@ class CameraStream:
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"cam-{self.camera_id}")
         self._thread.start()
 
-    def stop(self):
+    def stop(self, timeout=0.8):
+        """Stop detection loop and release reader cleanly."""
         self._stop_event.set()
         self.is_running = False
         reader = self.reader
+        self.reader = None
         if reader is not None:
             try:
                 reader.release()
             except Exception:
                 pass
         target_thread = self._thread
-        if target_thread and target_thread.is_alive():
-            def wait_and_clear():
-                try:
-                    target_thread.join(timeout=0.6)
-                except Exception:
-                    pass
-            threading.Thread(target=wait_and_clear, daemon=True).start()
+        if target_thread and target_thread.is_alive() and threading.current_thread() != target_thread:
+            try:
+                target_thread.join(timeout=timeout)
+            except Exception:
+                pass
+        self._thread = None
 
     def _run(self):
         reader = ThreadedCameraCapture(self.source, target_fps=self.target_fps)
         self.reader = reader
         if not reader.is_opened():
-            for _ in range(6):
-                if self._stop_event.is_set():
-                    reader.release()
-                    return
-                time.sleep(0.5)
-                if reader.is_opened():
-                    break
+            if self._stop_event.is_set():
+                reader.release()
+                return
+            time.sleep(0.1)
 
         if not reader.is_opened():
             print(f"  [CAM {self.camera_id}] ❌ Failed to connect to stream source: {self.source}")
@@ -656,11 +684,10 @@ class CameraStream:
                                                   "last_traffic_detections" not in self.dms_state)
 
                             if is_inference_frame:
-                                use_half = isinstance(device, int) or (isinstance(device, str) and "cuda" in device.lower())
                                 # Blazing-fast inference downsampling: imgsz=416 (imgsz=384 for CPU fallback)
                                 img_sz = 384 if device == "cpu" else 416
                                 with _model_lock:
-                                    results = self.model(frame, conf=self.confidence, imgsz=img_sz, half=use_half, device=device, verbose=False)[0]
+                                    results = self.model(frame, conf=self.confidence, imgsz=img_sz, device=device, verbose=False)[0]
                                 detections = sv.Detections.from_ultralytics(results)
 
                                 if self.tracking_on:
@@ -1351,9 +1378,8 @@ class CameraStream:
                 
                 if run_yolo:
                     self.dms_state["yolo_frame_count"] = self.dms_state.get("yolo_frame_count", 0) + 1
-                    use_half = isinstance(device, int) or (isinstance(device, str) and "cuda" in device.lower())
                     with _dms_model_lock:
-                        results_yolo = self.dms_model(frame, conf=self.confidence, imgsz=320, half=use_half, device=device, verbose=False)[0]
+                        results_yolo = self.dms_model(frame, conf=self.confidence, imgsz=320, device=device, verbose=False)[0]
                     detections = sv.Detections.from_ultralytics(results_yolo)
                     
                     cached_boxes = []

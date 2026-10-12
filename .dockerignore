@@ -1,0 +1,36 @@
+# ── Version Control ────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── IDE & OS ──────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Python bytecode ──────────────────────────────────────────
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+
+# ── Frontend (built separately in its own context; backend never touches it) ──
+frontend/
+
+# ── Runtime data directories (change constantly → kill cache) ─
+data/snapshots
+data/test_videos
+data/minio
+data/redis
+
+# ── Docker & CI artifacts ────────────────────────────────────
+docker-compose*.yml
+Dockerfile
+run.bat
+README.md
+*.md
