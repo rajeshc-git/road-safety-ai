@@ -364,6 +364,17 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
 
         if raw_text:
             cleaned = re.sub(r'[^A-Za-z0-9\s]', '', raw_text).strip()
+            # If the model produced a conversational sentence instead of extracting a plate, reject it
+            conversational_cues = [
+                "PLEASE PROVIDE", "UPLOAD THE IMAGE", "CANNOT SEE", "NO IMAGE",
+                "I CAN EXTRACT", "FOR YOU", "REFERRING TO", "ONCE YOU UPLOAD",
+                "SORRY", "AS AN AI", "I AM UNABLE", "THERE IS NO", "PLEASE UPLOAD"
+            ]
+            upper_raw = raw_text.upper()
+            if any(cue in upper_raw for cue in conversational_cues) or len(raw_text.split()) > 6:
+                print(f"  [AI Vision ({model})] Model returned conversational output instead of plate, skipping: {raw_text[:60]}...")
+                return None
+
             brand_names = {"FORD", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "GMC", "CHEVROLET", "ISUZU"}
             words = [w.upper() for w in cleaned.split() if w.upper() not in brand_names]
             final = " ".join(words).strip()
