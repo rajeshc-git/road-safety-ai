@@ -70,9 +70,10 @@ function SaudiPlate({ licensePlate }) {
   );
 }
 
-function ImageModal({ preview, onClose }) {
+function ImageModal({ preview, onClose, onReprocess }) {
   if (!preview) return null;
   const src = typeof preview === 'string' ? preview : preview.src;
+  const eventId = typeof preview === 'object' ? preview.id : null;
   const licensePlate = typeof preview === 'object' ? preview.licensePlate : null;
   const plateAr = typeof preview === 'object' ? preview.plateAr : null;
   const cameraName = typeof preview === 'object' ? preview.cameraName : null;
@@ -160,6 +161,44 @@ function ImageModal({ preview, onClose }) {
               borderRadius: '4px',
               boxShadow: '0 12px 40px rgba(0,0,0,0.5)'
             }} />
+
+            {/* Live AI Scanner Loading Overlay on Evidence Image */}
+            {licensePlate && licensePlate.toUpperCase() === 'PROCESSING' && (
+              <div style={{
+                position: 'absolute',
+                inset: 16,
+                borderRadius: '4px',
+                background: 'rgba(7, 10, 20, 0.65)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+                pointerEvents: 'none',
+                zIndex: 10,
+                border: '1px solid rgba(56, 189, 248, 0.45)',
+                backdropFilter: 'blur(2px)'
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: 'rgba(15, 23, 42, 0.9)',
+                  border: '1px solid #38bdf8',
+                  color: '#38bdf8',
+                  padding: '8px 16px',
+                  borderRadius: '24px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  letterSpacing: '0.6px',
+                  boxShadow: '0 0 25px rgba(56, 189, 248, 0.45)'
+                }}>
+                  <i className="fa-solid fa-spinner fa-spin" />
+                  <span>AI SCANNING NUMBER PLATE...</span>
+                </div>
+                <span style={{ fontSize: '9px', color: '#94a3b8' }}>Model inference in progress</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -244,6 +283,33 @@ function ImageModal({ preview, onClose }) {
                 <i className="fa-solid fa-eye-slash" style={{ fontSize: '16px', opacity: 0.6 }} />
                 <span>Plate text is not clear</span>
               </div>
+            )}
+
+            {eventId && onReprocess && (!eventType || eventType === 'Did Not Stop' || eventType.includes('Pedestrian')) && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => onReprocess(eventId)}
+                disabled={licensePlate && licensePlate.toUpperCase() === 'PROCESSING'}
+                style={{
+                  marginTop: '8px',
+                  width: '100%',
+                  padding: '7px 12px',
+                  fontSize: '11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: 'rgba(56, 189, 248, 0.1)',
+                  borderColor: 'rgba(56, 189, 248, 0.35)',
+                  color: '#38bdf8',
+                  borderRadius: '6px',
+                  cursor: (licensePlate && licensePlate.toUpperCase() === 'PROCESSING') ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <i className={`fa-solid fa-rotate ${(licensePlate && licensePlate.toUpperCase() === 'PROCESSING') ? 'fa-spin' : ''}`} />
+                <span>{licensePlate && licensePlate.toUpperCase() === 'PROCESSING' ? 'Processing...' : 'Post-Process / Re-Scan OCR'}</span>
+              </button>
             )}
           </div>
 
@@ -453,6 +519,7 @@ export default function EventsPage({ cameras, eventTrigger }) {
   const [confirmMsg, setConfirmMsg] = useState(null)
   const [confirmAction, setConfirmAction] = useState(null)
   const [progressState, setProgressState] = useState(null)
+  const [reprocessingIds, setReprocessingIds] = useState(new Set())
 
   const loadEvents = async () => {
     try {
@@ -468,6 +535,24 @@ export default function EventsPage({ cameras, eventTrigger }) {
   }
 
   useEffect(() => { loadEvents() }, [page, camFilter, statFilter, categoryFilter, eventTrigger])
+
+  // Sync open preview modal if its license plate was resolved asynchronously
+  useEffect(() => {
+    if (previewImg && events && events.length) {
+      const match = events.find(e => e.id === previewImg.id)
+      if (match) {
+        let meta = {}
+        try {
+          meta = typeof match.metadata_json === 'string' ? JSON.parse(match.metadata_json) : (match.metadata_json || {})
+        } catch {}
+        const dp = match.license_plate || meta.license_plate || meta.number_plate || null
+        const pa = meta.plate_ar || meta.license_plate_ar || null
+        if (dp && dp !== previewImg.licensePlate) {
+          setPreviewImg(prev => prev ? ({ ...prev, licensePlate: dp, plateAr: pa }) : null)
+        }
+      }
+    }
+  }, [events, previewImg?.id])
 
   // Clear selection when page/filters change
   useEffect(() => { setSelected(new Set()); setSelectAllAvailable(false) }, [page, camFilter, statFilter, categoryFilter])
@@ -613,6 +698,54 @@ export default function EventsPage({ cameras, eventTrigger }) {
     }
   }
 
+  // ── Post-Processing OCR Helpers ──
+  const reprocessSingle = async (id) => {
+    setReprocessingIds(prev => new Set(prev).add(id))
+    try {
+      await api.post(`/api/events/${id}/reprocess-ocr`)
+      setEvents(prev => prev.map(e => e.id === id ? { ...e, license_plate: 'PROCESSING' } : e))
+      if (previewImg && previewImg.id === id) {
+        setPreviewImg(prev => ({ ...prev, licensePlate: 'PROCESSING' }))
+      }
+    } catch (err) {
+      console.error("Failed to reprocess OCR", err)
+    } finally {
+      setTimeout(() => {
+        setReprocessingIds(prev => { const n = new Set(prev); n.delete(id); return n })
+      }, 1200)
+    }
+  }
+
+  const reprocessSelected = async () => {
+    let targetIds = []
+    if (selectAllAvailable) {
+      try {
+        let url = '/api/events/ids?'
+        if (camFilter !== 'all') url += `&camera_id=${camFilter}`
+        if (statFilter !== 'all') url += `&status=${statFilter}`
+        if (categoryFilter !== 'all') url += `&event_category=${categoryFilter}`
+        if (dateFrom) url += `&date_from=${dateFrom}`
+        if (dateTo) url += `&date_to=${dateTo}`
+        const res = await api.get(url)
+        targetIds = res.ids || []
+      } catch {
+        targetIds = [...selected]
+      }
+    } else {
+      targetIds = [...selected]
+    }
+
+    if (!targetIds || targetIds.length === 0) return
+    try {
+      await api.post('/api/events/reprocess-ocr', { ids: targetIds })
+      const idSet = new Set(targetIds)
+      setEvents(prev => prev.map(e => idSet.has(e.id) ? { ...e, license_plate: 'PROCESSING' } : e))
+      clearSelection()
+    } catch (err) {
+      console.error("Failed to batch reprocess OCR", err)
+    }
+  }
+
   // Confirm wrappers
   const askConfirm = (msg, action) => { setConfirmMsg(msg); setConfirmAction(() => action) }
   const onConfirm = () => { if (confirmAction) confirmAction(); setConfirmMsg(null); setConfirmAction(null) }
@@ -670,14 +803,34 @@ export default function EventsPage({ cameras, eventTrigger }) {
           </div>
 
           {selCount > 0 && (
-            <button className="btn-danger" onClick={() => askConfirm(
-              selectAllAvailable
-                ? `This will permanently delete ALL ${total} events across all pages. This cannot be undone.`
-                : `This will permanently delete ${selCount} selected event${selCount > 1 ? 's' : ''}. This cannot be undone.`,
-              deleteSelected
-            )}>
-              <i className="fa-solid fa-trash" /> Delete {selCount > 0 ? `(${selCount})` : ''}
-            </button>
+            <>
+              <button
+                className="btn-secondary"
+                style={{
+                  background: 'rgba(56, 189, 248, 0.12)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
+                  fontSize: '11px',
+                  padding: '6px 12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+                onClick={reprocessSelected}
+                title="Post-process / Re-scan OCR on selected events"
+              >
+                <i className="fa-solid fa-rotate" />
+                <span>Re-scan OCR ({selCount})</span>
+              </button>
+              <button className="btn-danger" onClick={() => askConfirm(
+                selectAllAvailable
+                  ? `This will permanently delete ALL ${total} events across all pages. This cannot be undone.`
+                  : `This will permanently delete ${selCount} selected event${selCount > 1 ? 's' : ''}. This cannot be undone.`,
+                deleteSelected
+              )}>
+                <i className="fa-solid fa-trash" /> Delete {selCount > 0 ? `(${selCount})` : ''}
+              </button>
+            </>
           )}
           <button className="btn-danger-outline" onClick={() => askConfirm(
             `This will permanently delete ALL ${total} events in the database and all snapshot files. This cannot be undone.`,
@@ -744,12 +897,17 @@ export default function EventsPage({ cameras, eventTrigger }) {
                 {events.map((ev, i) => {
                   const t = (ev.timestamp || '').split(' ')
                   const isChecked = selectAllAvailable || selected.has(ev.id)
+                  const isDms = ev.event_type && ev.event_type !== 'Did Not Stop' && ev.event_type !== 'Did Not Stop (Pedestrian Crossing)'
                   let meta = {}
                   try {
                     if (ev.metadata_json) {
                       meta = typeof ev.metadata_json === 'string' ? JSON.parse(ev.metadata_json) : ev.metadata_json
                     }
                   } catch { }
+                  const dp = ev.license_plate || meta.license_plate || meta.number_plate || ev.number_plate || null
+                  const pa = meta.plate_ar || meta.license_plate_ar || null
+                  const isScanning = dp && dp.toUpperCase() === 'PROCESSING'
+
                   return (
                     <tr key={ev.id} className={isChecked ? 'row-selected' : ''}>
                       <td style={{ textAlign: 'center' }}>
@@ -763,7 +921,46 @@ export default function EventsPage({ cameras, eventTrigger }) {
                       <td style={{ color: 'var(--t3)' }}>{(page - 1) * PER + i + 1}</td>
                       <td style={{ fontFamily: 'monospace' }}>{t[1] || ev.timestamp}</td>
                       <td>{ev.camera_name}</td>
-                      <td>ID: {ev.vehicle_id}</td>
+                      <td>
+                        <div style={{ fontWeight: '600' }}>ID: {ev.vehicle_id}</div>
+                        {!isDms && (
+                          <div style={{ marginTop: '3px' }}>
+                            {isScanning ? (
+                              <span style={{
+                                fontSize: '8px',
+                                background: 'rgba(56, 189, 248, 0.12)',
+                                color: '#38bdf8',
+                                border: '1px solid rgba(56, 189, 248, 0.4)',
+                                borderRadius: '2px',
+                                padding: '1px 5px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                fontWeight: '700'
+                              }}>
+                                <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: '7px' }} />
+                                Scanning...
+                              </span>
+                            ) : dp && dp.toUpperCase() !== 'NOT CLEAR' ? (
+                              <span style={{
+                                background: '#fff',
+                                color: '#000',
+                                borderRadius: '2px',
+                                padding: '1px 5px',
+                                fontFamily: "'Courier New', monospace",
+                                fontWeight: '700',
+                                fontSize: '8.5px',
+                                border: '1px solid #ccc',
+                                letterSpacing: '0.4px'
+                              }}>
+                                {dp}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: '7.5px', color: 'var(--t3)' }}>Plate N/A</span>
+                            )}
+                          </div>
+                        )}
+                      </td>
                       <td>
                         {(ev.event_type || '').replace(' (Pedestrian Crossing)', '')}
                         {meta.crossed_line_idx !== undefined && meta.crossed_line_idx !== null && (
@@ -781,31 +978,75 @@ export default function EventsPage({ cameras, eventTrigger }) {
                         )}
                       </td>
                       <td>
-                        <img
-                          src={snapshotUrl(ev.snapshot_path)}
-                          style={{ height: 28, borderRadius: 2, cursor: 'pointer' }}
-                          alt=""
-                          onClick={() => {
-                            const dp = ev.license_plate || meta.license_plate || meta.number_plate || ev.number_plate || null
-                            const pa = meta.plate_ar || meta.license_plate_ar || null
-                            setPreviewImg({
-                              src: snapshotUrl(ev.snapshot_path),
-                              licensePlate: dp,
-                              plateAr: pa,
-                              cameraName: ev.camera_name,
-                              eventType: ev.event_type || 'Did Not Stop',
-                              timestamp: ev.timestamp,
-                              crossedLineIdx: meta.crossed_line_idx
-                            })
-                          }}
-                          onError={e => e.target.style.display = 'none'}
-                        />
+                        <div style={{ position: 'relative', display: 'inline-block' }}>
+                          <img
+                            src={snapshotUrl(ev.snapshot_path)}
+                            style={{ height: 28, borderRadius: 2, cursor: 'pointer', display: 'block' }}
+                            alt=""
+                            onClick={() => {
+                              setPreviewImg({
+                                id: ev.id,
+                                src: snapshotUrl(ev.snapshot_path),
+                                licensePlate: dp,
+                                plateAr: pa,
+                                cameraName: ev.camera_name,
+                                eventType: ev.event_type || 'Did Not Stop',
+                                timestamp: ev.timestamp,
+                                crossedLineIdx: meta.crossed_line_idx
+                              })
+                            }}
+                            onError={e => e.target.style.display = 'none'}
+                          />
+                          {isScanning && (
+                            <div
+                              title="AI Scanning License Plate..."
+                              onClick={() => {
+                                setPreviewImg({
+                                  id: ev.id,
+                                  src: snapshotUrl(ev.snapshot_path),
+                                  licensePlate: dp,
+                                  plateAr: pa,
+                                  cameraName: ev.camera_name,
+                                  eventType: ev.event_type || 'Did Not Stop',
+                                  timestamp: ev.timestamp,
+                                  crossedLineIdx: meta.crossed_line_idx
+                                })
+                              }}
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                background: 'rgba(7, 10, 20, 0.72)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: 2,
+                                cursor: 'pointer',
+                                border: '1px solid #38bdf8'
+                              }}
+                            >
+                              <i className="fa-solid fa-spinner fa-spin" style={{ color: '#38bdf8', fontSize: '9px' }} />
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td>
-                        <button className="act-btn act-del" style={{ padding: '3px 8px', fontSize: 9 }} onClick={() => askConfirm(
-                          `Delete event #${ev.id}? This cannot be undone.`,
-                          () => deleteSingle(ev.id)
-                        )} title="Delete event"><i className="fa-solid fa-trash" style={{ fontSize: 9 }} /></button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          {!isDms && (
+                            <button
+                              className="act-btn"
+                              style={{ padding: '3px 7px', fontSize: 9, color: '#38bdf8' }}
+                              onClick={() => reprocessSingle(ev.id)}
+                              disabled={isScanning}
+                              title="Post-process / Re-scan OCR"
+                            >
+                              <i className={`fa-solid fa-rotate ${reprocessingIds.has(ev.id) || isScanning ? 'fa-spin' : ''}`} style={{ fontSize: 9 }} />
+                            </button>
+                          )}
+                          <button className="act-btn act-del" style={{ padding: '3px 7px', fontSize: 9 }} onClick={() => askConfirm(
+                            `Delete event #${ev.id}? This cannot be undone.`,
+                            () => deleteSingle(ev.id)
+                          )} title="Delete event"><i className="fa-solid fa-trash" style={{ fontSize: 9 }} /></button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -821,7 +1062,7 @@ export default function EventsPage({ cameras, eventTrigger }) {
               padding: '12px',
               alignContent: 'start'
             }}>
-              {events.map((ev, i) => {
+              {events.map((ev) => {
                 const t = (ev.timestamp || '').split(' ')
                 const isChecked = selectAllAvailable || selected.has(ev.id)
                 const isDms = ev.event_type && ev.event_type !== 'Did Not Stop' && ev.event_type !== 'Did Not Stop (Pedestrian Crossing)'
@@ -863,8 +1104,9 @@ export default function EventsPage({ cameras, eventTrigger }) {
                     </div>
 
                     <div
-                      style={{ height: '124px', background: '#000', cursor: 'pointer' }}
+                      style={{ height: '124px', background: '#000', cursor: 'pointer', position: 'relative' }}
                       onClick={() => setPreviewImg({
+                        id: ev.id,
                         src: snapshotUrl(ev.snapshot_path),
                         licensePlate: dp,
                         plateAr: pa,
@@ -880,6 +1122,39 @@ export default function EventsPage({ cameras, eventTrigger }) {
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                         onError={e => { e.target.style.display = 'none' }}
                       />
+                      {/* Prominent high-tech loading / scanning overlay right over snapshot image */}
+                      {dp && dp.toUpperCase() === 'PROCESSING' && (
+                        <div style={{
+                          position: 'absolute',
+                          inset: 0,
+                          background: 'rgba(7, 10, 20, 0.72)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          backdropFilter: 'blur(2px)',
+                          border: '1px solid rgba(56, 189, 248, 0.5)'
+                        }}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            background: 'rgba(56, 189, 248, 0.2)',
+                            border: '1px solid #38bdf8',
+                            color: '#38bdf8',
+                            padding: '3px 8px',
+                            borderRadius: '12px',
+                            fontSize: '9.5px',
+                            fontWeight: '700',
+                            boxShadow: '0 0 12px rgba(56, 189, 248, 0.4)'
+                          }}>
+                            <i className="fa-solid fa-spinner fa-spin" />
+                            <span>AI SCANNING...</span>
+                          </div>
+                          <span style={{ fontSize: '8px', color: '#94a3b8' }}>Reading license plate</span>
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', flex: 1 }}>
@@ -904,7 +1179,7 @@ export default function EventsPage({ cameras, eventTrigger }) {
                         {meta.crossed_line_idx !== undefined && meta.crossed_line_idx !== null && (
                           <span style={{
                             backgroundColor: 'rgba(59, 130, 246, 0.12)',
-                            color: '#3b82f6',
+                            color: '#38bdf8',
                             border: '1px solid rgba(59, 130, 246, 0.2)',
                             padding: '2px 6px',
                             borderRadius: '3px',
@@ -972,12 +1247,25 @@ export default function EventsPage({ cameras, eventTrigger }) {
                           <span className="badge-r" onClick={() => toggleStatus(ev.id, ev.status)} style={{ cursor: 'pointer', padding: '3px 8px', fontSize: '9px' }} title="Click to mark Pending">Reviewed</span>
                         )}
 
-                        <button className="act-btn act-del" style={{ padding: '4px 8px', fontSize: 9 }} onClick={() => askConfirm(
-                          `Delete event #${ev.id}? This cannot be undone.`,
-                          () => deleteSingle(ev.id)
-                        )} title="Delete event">
-                          <i className="fa-solid fa-trash" style={{ fontSize: 10 }} />
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {!isDms && (
+                            <button
+                              className="act-btn"
+                              style={{ padding: '4px 8px', fontSize: 9, color: '#38bdf8' }}
+                              onClick={() => reprocessSingle(ev.id)}
+                              disabled={dp && dp.toUpperCase() === 'PROCESSING'}
+                              title="Post-process / Re-scan OCR"
+                            >
+                              <i className={`fa-solid fa-rotate ${reprocessingIds.has(ev.id) || (dp && dp.toUpperCase() === 'PROCESSING') ? 'fa-spin' : ''}`} style={{ fontSize: 10 }} />
+                            </button>
+                          )}
+                          <button className="act-btn act-del" style={{ padding: '4px 8px', fontSize: 9 }} onClick={() => askConfirm(
+                            `Delete event #${ev.id}? This cannot be undone.`,
+                            () => deleteSingle(ev.id)
+                          )} title="Delete event">
+                            <i className="fa-solid fa-trash" style={{ fontSize: 10 }} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1003,7 +1291,7 @@ export default function EventsPage({ cameras, eventTrigger }) {
       </div>
 
       {/* Fullscreen zoom modal overlay */}
-      <ImageModal preview={previewImg} onClose={() => setPreviewImg(null)} />
+      <ImageModal preview={previewImg} onClose={() => setPreviewImg(null)} onReprocess={reprocessSingle} />
 
       {/* Confirm delete modal */}
       <ConfirmModal message={confirmMsg} onConfirm={onConfirm} onCancel={onCancelConfirm} />

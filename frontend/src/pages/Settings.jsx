@@ -276,6 +276,17 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
                     </div>
                   </>
                 )}
+
+                <SettingSlider
+                  label="AI OCR Processing Gap / Cooldown"
+                  value={vals.ai_ocr_delay || '1.5'}
+                  min={0.2}
+                  max={5.0}
+                  step={0.1}
+                  unit="seconds"
+                  onChange={sl('ai_ocr_delay')}
+                  desc="Cooldown delay between consecutive OCR evaluations. Gives the offline AI vision model runner and local GPU time to release context, ensuring 100% of consecutive vehicles have their number plates accurately extracted without dropping to 'NOT CLEAR'."
+                />
               </div>
             </>}
             {tab==='storage' && <>

@@ -64,7 +64,7 @@ export default function SkeuomorphicPlayer({
     <div className={`skeuo-chassis ${skin}`}>
       {/* Outer Hardware Faceplate Bevel */}
       <div className="skeuo-body">
-        
+
         {/* Left Tactile Grip / Hardware Controls */}
         <div className="skeuo-left-grip">
           <div className="skeuo-screw top" />
@@ -78,8 +78,8 @@ export default function SkeuomorphicPlayer({
             <div className="groove" />
             <div className="groove" />
           </div>
-          <button 
-            type="button" 
+          <button
+            type="button"
             className="skeuo-tactile-round-btn"
             onClick={onFullscreen}
             title="Eject / Fullscreen Theater"
@@ -90,7 +90,7 @@ export default function SkeuomorphicPlayer({
 
         {/* Central Display & Bezel Section */}
         <div className="skeuo-center-unit">
-          
+
           {/* Top Brand & Status Plaque */}
           <div className="skeuo-top-plaque">
             <div className="plaque-emboss">
@@ -98,12 +98,12 @@ export default function SkeuomorphicPlayer({
               <span className="plaque-title">HIGH-FIDELITY VISION</span>
               <span className="brand-dot" />
             </div>
-            
+
             {/* Camera Feed Selector */}
             <div className="skeuo-skin-selector" title="Switch Active Camera">
               <i className="fa-solid fa-video skin-icon" />
-              <select 
-                value={activeCam?.id || ''} 
+              <select
+                value={activeCam?.id || ''}
                 onChange={(e) => onCamSwitch && onCamSwitch(e.target.value)}
                 className="skeuo-skin-dropdown"
               >
@@ -118,7 +118,7 @@ export default function SkeuomorphicPlayer({
           {/* Glowing Cockpit LCD Display Viewport */}
           <div className="skeuo-screen-housing">
             <div className="skeuo-screen-glass">
-              
+
               {/* Retro HUD Header inside Amber/Green Glass */}
               <div className="skeuo-hud-header">
                 <div className="hud-left-tags">
@@ -150,15 +150,15 @@ export default function SkeuomorphicPlayer({
                 {isActiveOnline && (
                   <div className="skeuo-oscilloscope-overlay">
                     <svg viewBox="0 0 400 60" className="oscilloscope-svg" preserveAspectRatio="none">
-                      <path 
-                        d="M0 30 Q 30 10, 60 30 T 120 30 T 180 15 T 240 45 T 300 30 T 360 20 T 400 30" 
-                        fill="none" 
-                        className="osc-wave-1" 
+                      <path
+                        d="M0 30 Q 30 10, 60 30 T 120 30 T 180 15 T 240 45 T 300 30 T 360 20 T 400 30"
+                        fill="none"
+                        className="osc-wave-1"
                       />
-                      <path 
-                        d="M0 30 Q 40 45, 80 30 T 160 30 T 220 50 T 280 10 T 340 30 T 400 30" 
-                        fill="none" 
-                        className="osc-wave-2" 
+                      <path
+                        d="M0 30 Q 40 45, 80 30 T 160 30 T 220 50 T 280 10 T 340 30 T 400 30"
+                        fill="none"
+                        className="osc-wave-2"
                       />
                     </svg>
                   </div>
@@ -169,19 +169,19 @@ export default function SkeuomorphicPlayer({
 
           {/* Lower Mechanical Cockpit Control Deck */}
           <div className="skeuo-bottom-deck">
-            
+
             {/* Left Circular Convex Skip Module */}
             <div className="skeuo-convex-btn-module">
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className="skeuo-convex-dual-btn"
                 onClick={handlePrevCam}
                 title={`Previous Camera (${prevCam?.name || 'Prev'})`}
               >
                 <i className="fa-solid fa-backward-step" />
               </button>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className="skeuo-convex-dual-btn"
                 onClick={handleNextCam}
                 title={`Next Camera (${nextCam?.name || 'Next'})`}
@@ -193,18 +193,18 @@ export default function SkeuomorphicPlayer({
             {/* Middle Tactile Micro-Knobs (SENS / GAIN) */}
             <div className="skeuo-rotary-sub-group">
               <div className="skeuo-micro-dial-wrap" onClick={handleTrebClick} title="Sensitivity / High Pass (Click to rotate)">
-                <div 
-                  className="skeuo-micro-knob" 
+                <div
+                  className="skeuo-micro-knob"
                   style={{ transform: `rotate(${trebAngle}deg)` }}
                 >
                   <div className="knob-notch" />
                 </div>
                 <span className="micro-knob-label">SENS</span>
               </div>
-              
+
               <div className="skeuo-micro-dial-wrap" onClick={handleBassClick} title="Gain / Frame Buffer (Click to rotate)">
-                <div 
-                  className="skeuo-micro-knob" 
+                <div
+                  className="skeuo-micro-knob"
                   style={{ transform: `rotate(${bassAngle}deg)` }}
                 >
                   <div className="knob-notch" />
@@ -215,8 +215,8 @@ export default function SkeuomorphicPlayer({
 
             {/* Master Machined Metallic Volume / Rate Rotary Knob */}
             <div className="skeuo-master-dial-wrap" onClick={handleMainKnobClick} title="Master AI Precision & Frame Rate Dial (Click to rotate)">
-              <div 
-                className="skeuo-master-knob" 
+              <div
+                className="skeuo-master-knob"
                 style={{ transform: `rotate(${knobAngle}deg)` }}
               >
                 <div className="master-radial-shimmer" />
@@ -233,8 +233,8 @@ export default function SkeuomorphicPlayer({
 
             {/* Right Large Circular Convex Play / Pause Button */}
             <div className="skeuo-convex-play-module">
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className={`skeuo-convex-main-btn ${isActiveOnline ? 'playing' : 'paused'} ${streamLoading ? 'loading' : ''}`}
                 onClick={isActiveOnline ? onStop : onStart}
                 disabled={streamLoading}
@@ -255,7 +255,7 @@ export default function SkeuomorphicPlayer({
         <div className="skeuo-right-grip">
           <div className="skeuo-screw top" />
 
-          <div 
+          <div
             className={`skeuo-vertical-plate ${isDrawingZone ? 'active' : ''}`}
             onClick={onToggleDraw}
             title="3D Zone Calibration HUD"

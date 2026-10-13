@@ -225,6 +225,30 @@ async def delete_all_events():
     return {"status": "deleted", "count": count}
 
 
+@app.post("/api/events/{event_id}/reprocess-ocr")
+async def reprocess_event_ocr_endpoint(event_id: int):
+    """Post-process OCR on an existing event from snapshot images."""
+    from violation_detector import reprocess_event_ocr
+    ok = await reprocess_event_ocr(event_id)
+    if not ok:
+        raise HTTPException(400, "Failed to reprocess event OCR (event not found or missing snapshot)")
+    return {"status": "queued", "event_id": event_id}
+
+
+@app.post("/api/events/reprocess-ocr")
+async def batch_reprocess_event_ocr(data: dict):
+    """Batch post-process OCR on multiple events."""
+    ids = data.get("ids", [])
+    if not ids:
+        raise HTTPException(400, "No event IDs provided")
+    from violation_detector import reprocess_event_ocr
+    count = 0
+    for eid in ids:
+        if await reprocess_event_ocr(eid):
+            count += 1
+    return {"status": "queued", "count": count}
+
+
 @app.post("/api/cameras/{cam_id}/webrtc/offer")
 async def webrtc_offer(cam_id: int, data: dict):
     """WebRTC signaling endpoint for browser video streaming."""

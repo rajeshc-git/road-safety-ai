@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from datetime import datetime
 from typing import Tuple, Optional
 
@@ -105,13 +106,36 @@ async def _ocr_queue_consumer():
 
             except Exception as ocr_err:
                 print(f"  [OCR Background] Error: {ocr_err}")
-                await db.update_event_license_plate(event_id, "NOT CLEAR")
+                try:
+                    await db.update_event_license_plate(event_id, "NOT CLEAR")
+                except Exception:
+                    pass
                 from camera_manager import get_camera_manager
                 cm = get_camera_manager()
                 if cm:
-                    await cm.broadcast_plate_update(camera_id, event_id, "NOT CLEAR")
+                    try:
+                        await cm.broadcast_plate_update(camera_id, event_id, "NOT CLEAR")
+                    except Exception:
+                        pass
             finally:
                 _ocr_queue.task_done()
+                # Introduce a cooldown gap between consecutive OCR tasks
+                # to let local AI vision model / GPU context reset and prevent subsequent frames from returning "NOT CLEAR"
+                try:
+                    settings = get_runtime_settings()
+                    provider = settings.get("ocr_provider", "ocr_space")
+                    try:
+                        ocr_gap = float(settings.get("ai_ocr_delay", 1.5))
+                    except Exception:
+                        ocr_gap = 1.5
+                    
+                    if provider in ("docker_ai", "gemma4", "local") and ocr_gap > 0:
+                        await asyncio.sleep(ocr_gap)
+                    elif ocr_gap > 0:
+                        # For OCR.space or cloud APIs, respect rate limits
+                        await asyncio.sleep(min(ocr_gap, 1.0))
+                except Exception as gap_err:
+                    print(f"  [OCR Gap] Cooldown notice: {gap_err}")
         except asyncio.CancelledError:
             break
         except Exception as q_err:
@@ -126,6 +150,86 @@ def enqueue_ocr_job(job_tuple):
     if _ocr_worker_task is None or _ocr_worker_task.done():
         _ocr_worker_task = asyncio.create_task(_ocr_queue_consumer())
     _ocr_queue.put_nowait(job_tuple)
+
+
+async def reprocess_event_ocr(event_id: int) -> bool:
+    """
+    Post-processes OCR on an existing event from disk snapshots.
+    Re-enqueues the event into the sequential background queue with a clean PROCESSING state.
+    """
+    event = await db.get_event(event_id)
+    if not event:
+        return False
+
+    meta = {}
+    try:
+        if event.get("metadata_json"):
+            meta = json.loads(event["metadata_json"]) if isinstance(event["metadata_json"], str) else event["metadata_json"]
+    except Exception:
+        meta = {}
+
+    if meta.get("is_dms") or (event.get("event_type") and event["event_type"] not in ("Did Not Stop", "Did Not Stop (Pedestrian Crossing)")):
+        # Not a traffic vehicle plate event
+        return False
+
+    camera_id = event["camera_id"]
+    snap_filename = event.get("snapshot_path")
+    crop_filename = meta.get("crop_path")
+    box = meta.get("box", [0, 0, 0, 0])
+    
+    settings = get_runtime_settings()
+    quality_map = {"full": 100, "high": 95, "medium": 75, "low": 50}
+    quality = quality_map.get(settings.get("snapshot_quality", "high"), 90)
+
+    snap_path = str(SNAPSHOTS_DIR / snap_filename) if snap_filename else None
+    crop_path = str(SNAPSHOTS_DIR / crop_filename) if crop_filename else None
+
+    # Load crop image from disk
+    crop_img = None
+    frame_img = None
+    
+    if crop_path and os.path.exists(crop_path):
+        crop_img = cv.imread(crop_path)
+    
+    if snap_path and os.path.exists(snap_path):
+        frame_img = cv.imread(snap_path)
+        if crop_img is None and frame_img is not None and len(box) == 4:
+            x1, y1, x2, y2 = box
+            img_h, img_w = frame_img.shape[:2]
+            x1c, y1c = max(0, x1 - 15), max(0, y1 - 15)
+            x2c, y2c = min(img_w, x2 + 15), min(img_h, y2 + 15)
+            crop_img = frame_img[y1c:y2c, x1c:x2c]
+
+    if crop_img is None or crop_img.size == 0:
+        return False
+
+    # Mark as PROCESSING in database and notify UI
+    await db.update_event_license_plate(event_id, "PROCESSING")
+    from camera_manager import get_camera_manager
+    cm = get_camera_manager()
+    if cm:
+        await cm.broadcast_plate_update(camera_id, event_id, "PROCESSING")
+        await cm.broadcast_ocr_toast(f"Post-processing event #{event_id}...", toast_type="info", title="AI OCR Post-Processing")
+
+    x1c = max(0, box[0] - 15) if len(box) >= 4 else 0
+    y1c = max(0, box[1] - 15) if len(box) >= 4 else 0
+
+    job_data = (
+        camera_id,
+        event_id,
+        crop_img.copy(),
+        frame_img.copy() if frame_img is not None else None,
+        box,
+        snap_path,
+        crop_path,
+        snap_filename,
+        crop_filename,
+        quality,
+        x1c,
+        y1c,
+    )
+    enqueue_ocr_job(job_data)
+    return True
 
 
 def get_ocr_reader(preferred_backend: str = "easyocr"):
@@ -310,10 +414,20 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
         return None
 
     b64_img = base64.b64encode(buf.tobytes()).decode("utf-8")
-    base_url = endpoint.rstrip("/")
+    raw_base = endpoint.rstrip("/")
 
-    # Standard OpenAI compatible /v1/chat/completions (Docker Model Runner, Ollama, vLLM, LMStudio, etc.)
-    url = f"{base_url}/v1/chat/completions"
+    # Build fallback base URLs for seamless connection in Windows/Docker/WSL environments
+    candidate_urls = [raw_base]
+    if "host.docker.internal" in raw_base:
+        candidate_urls.append(raw_base.replace("host.docker.internal", "127.0.0.1"))
+        candidate_urls.append(raw_base.replace("host.docker.internal", "localhost"))
+    elif "localhost" in raw_base:
+        candidate_urls.append(raw_base.replace("localhost", "host.docker.internal"))
+        candidate_urls.append(raw_base.replace("localhost", "127.0.0.1"))
+    elif "127.0.0.1" in raw_base:
+        candidate_urls.append(raw_base.replace("127.0.0.1", "host.docker.internal"))
+        candidate_urls.append(raw_base.replace("127.0.0.1", "localhost"))
+
     system_msg = (
         "You are an expert automated license plate recognition (ALPR) system. "
         "Locate the vehicle license plate (usually on the front bumper or grille). "
@@ -353,66 +467,91 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
         "max_tokens": 25
     }
 
-    try:
-        resp = requests.post(url, json=payload, timeout=25)
-        raw_text = ""
-        if resp.status_code == 200:
-            data = resp.json()
-            choices = data.get("choices", [])
-            if choices:
-                raw_text = choices[0].get("message", {}).get("content", "")
-        else:
-            # Fallback to Ollama native generate endpoint if /v1/chat/completions is not supported
-            fallback_url = f"{base_url}/api/generate"
-            fb_payload = {
-                "model": model,
-                "system": system_msg,
-                "prompt": user_msg,
-                "images": [b64_img],
-                "stream": False,
-                "options": {
-                    "temperature": 0.0,
-                    "num_predict": 20
-                }
-            }
-            fb_resp = requests.post(fallback_url, json=fb_payload, timeout=20)
-            if fb_resp.status_code == 200:
-                raw_text = fb_resp.json().get("response", "")
+    for base_url in candidate_urls:
+        url = f"{base_url}/v1/chat/completions"
+        for attempt in range(2):
+            try:
+                resp = requests.post(url, json=payload, timeout=35)
+                raw_text = ""
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        raw_text = choices[0].get("message", {}).get("content", "")
+                elif resp.status_code in (429, 500, 503) and attempt == 0:
+                    time.sleep(1.2)
+                    continue
+                else:
+                    # Fallback to Ollama native generate endpoint if /v1/chat/completions is not supported
+                    fallback_url = f"{base_url}/api/generate"
+                    fb_payload = {
+                        "model": model,
+                        "system": system_msg,
+                        "prompt": user_msg,
+                        "images": [b64_img],
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.0,
+                            "num_predict": 20
+                        }
+                    }
+                    fb_resp = requests.post(fallback_url, json=fb_payload, timeout=30)
+                    if fb_resp.status_code == 200:
+                        raw_text = fb_resp.json().get("response", "")
+                    elif fb_resp.status_code in (429, 500, 503) and attempt == 0:
+                        time.sleep(1.2)
+                        continue
 
-        if raw_text:
-            cleaned = re.sub(r'[^A-Za-z0-9\s]', '', raw_text).strip()
-            upper_raw = cleaned.upper().strip()
+                if raw_text:
+                    # Convert Eastern Arabic digits to standard ASCII numerals (e.g. ٥٥٣٦ -> 5536)
+                    arabic_to_ascii = {'٠':'0', '١':'1', '٢':'2', '٣':'3', '٤':'4', '٥':'5', '٦':'6', '٧':'7', '٨':'8', '٩':'9'}
+                    for ar_c, en_c in arabic_to_ascii.items():
+                        raw_text = raw_text.replace(ar_c, en_c)
 
-            # If the model indicates plate is not visible or unreadable, return None
-            if upper_raw in ("NONE", "NO", "NOT VISIBLE", "UNREADABLE", "NOT CLEAR", "NA", "N/A", "1234 ABC", "1234ABC"):
+                    cleaned = re.sub(r'[^A-Za-z0-9\s]', '', raw_text).strip()
+                    upper_raw = cleaned.upper().strip()
+
+                    # If the model indicates plate is not visible or unreadable, return None
+                    if upper_raw in ("NONE", "NO", "NOT VISIBLE", "UNREADABLE", "NOT CLEAR", "NA", "N/A", "1234 ABC", "1234ABC"):
+                        return None
+
+                    # If the model produced a conversational sentence instead of extracting a plate, reject it
+                    conversational_cues = [
+                        "PLEASE PROVIDE", "UPLOAD THE IMAGE", "CANNOT SEE", "NO IMAGE",
+                        "I CAN EXTRACT", "FOR YOU", "REFERRING TO", "ONCE YOU UPLOAD",
+                        "SORRY", "AS AN AI", "I AM UNABLE", "THERE IS NO", "PLEASE UPLOAD",
+                        "NOT VISIBLE", "CANNOT READ", "UNABLE TO"
+                    ]
+                    if any(cue in upper_raw for cue in conversational_cues) or len(raw_text.split()) > 6:
+                        print(f"  [AI Vision ({model})] Model returned conversational output or cannot read plate, skipping: {raw_text[:60]}...")
+                        return None
+
+                    filler_words = {
+                        "FORD", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "GMC", "CHEVROLET", "ISUZU", "BMW", "MERCEDES", "KIA", "MAZDA",
+                        "LICENSE", "PLATE", "PLATES", "NUMBER", "REGISTRATION", "VEHICLE", "CAR", "THE", "IS", "SAUDI", "ARABIA", "KSA"
+                    }
+                    words = [w.upper() for w in cleaned.split() if w.upper() not in filler_words]
+                    final = " ".join(words).strip()
+                    if final and final != "1234 ABC" and (any(c.isdigit() for c in final) or len(final) >= 3):
+                        print(f"  [AI Vision ({model})] Successfully extracted license plate: '{final}'")
+                        return final
                 return None
-
-            # If the model produced a conversational sentence instead of extracting a plate, reject it
-            conversational_cues = [
-                "PLEASE PROVIDE", "UPLOAD THE IMAGE", "CANNOT SEE", "NO IMAGE",
-                "I CAN EXTRACT", "FOR YOU", "REFERRING TO", "ONCE YOU UPLOAD",
-                "SORRY", "AS AN AI", "I AM UNABLE", "THERE IS NO", "PLEASE UPLOAD",
-                "NOT VISIBLE", "CANNOT READ", "UNABLE TO"
-            ]
-            if any(cue in upper_raw for cue in conversational_cues) or len(raw_text.split()) > 5:
-                print(f"  [AI Vision ({model})] Model returned conversational output or cannot read plate, skipping: {raw_text[:60]}...")
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as conn_err:
+                if attempt == 0:
+                    time.sleep(1.0)
+                    continue
+                # Try next candidate endpoint URL
+                break
+            except Exception as e:
+                print(f"  [AI Vision ({model})] Request failed: {e}")
+                from camera_manager import get_camera_manager
+                cm = get_camera_manager()
+                if cm and cm.loop:
+                    asyncio.run_coroutine_threadsafe(
+                        cm.broadcast_ocr_toast(f"AI Runner notice: {str(e)[:50]}", toast_type="warning", title="AI Model Runner"),
+                        cm.loop
+                    )
                 return None
-
-            brand_names = {"FORD", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "GMC", "CHEVROLET", "ISUZU"}
-            words = [w.upper() for w in cleaned.split() if w.upper() not in brand_names]
-            final = " ".join(words).strip()
-            if final and final != "1234 ABC" and (any(c.isdigit() for c in final) or len(final) >= 3):
-                print(f"  [AI Vision ({model})] Successfully extracted license plate: '{final}'")
-                return final
-    except Exception as e:
-        print(f"  [AI Vision ({model})] Request failed: {e}")
-        from camera_manager import get_camera_manager
-        cm = get_camera_manager()
-        if cm and cm.loop:
-            asyncio.run_coroutine_threadsafe(
-                cm.broadcast_ocr_toast(f"AI Runner notice: {str(e)[:50]}", toast_type="warning", title="AI Model Runner"),
-                cm.loop
-            )
     return None
 
 
@@ -453,13 +592,15 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
         if ocr_provider in ("docker_ai", "gemma4"):
             # 1. First try the full vehicle crop directly so Vision models have complete context
             ai_plate = _call_ai_vision(vehicle_crop, endpoint=ai_runner_endpoint, model=ai_runner_model)
-            # 2. If not detected, try the lower bumper portion
+            # 2. If not detected, try the lower bumper portion with a slight breath
             if not ai_plate and lower_portion.size > 0:
+                time.sleep(0.4)
                 ai_plate = _call_ai_vision(lower_portion, endpoint=ai_runner_endpoint, model=ai_runner_model)
             # 3. If still not detected, try wider lower crop
             if not ai_plate and h >= 80:
                 wider_crop = vehicle_crop[int(h * 0.25):int(h * 1.0), 0:w]
                 if wider_crop.size > 0:
+                    time.sleep(0.4)
                     ai_plate = _call_ai_vision(wider_crop, endpoint=ai_runner_endpoint, model=ai_runner_model)
             if ai_plate:
                 coords = (int(w * 0.15), int(h * 0.55), int(w * 0.85), int(h * 0.95))

@@ -4,7 +4,7 @@ import './Pages.css'
 
 export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigate, onRefreshCameras, streamKey }) {
   const [adding, setAdding] = useState(false)
-  const [newCam, setNewCam] = useState({ name:'', source:'0', type:'webcam', config: { mode: 'traffic' } })
+  const [newCam, setNewCam] = useState({ name: '', source: '0', type: 'webcam', config: { mode: 'traffic' } })
   const [testVideos, setTestVideos] = useState([])
 
   useEffect(() => {
@@ -14,9 +14,9 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
         setTestVideos(vids || [])
         // If current default type is file, pre-populate first available video
         if (vids && vids.length > 0 && newCam.type === 'file' && !newCam.source) {
-          setNewCam(c => ({...c, source: vids[0].path}))
+          setNewCam(c => ({ ...c, source: vids[0].path }))
         }
-      } catch(e) { console.error("Failed to load test videos", e) }
+      } catch (e) { console.error("Failed to load test videos", e) }
     }
     loadTestVideos()
   }, [])
@@ -27,7 +27,7 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
     if (type === 'file' && testVideos.length > 0) {
       source = testVideos[0].path
     }
-    setNewCam({...newCam, type, source})
+    setNewCam({ ...newCam, type, source })
   }
 
   const addCamera = async () => {
@@ -36,7 +36,7 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
     try {
       const result = await api.post('/api/cameras', newCam)
       setAdding(false)
-      setNewCam({ name:'', source:'0', type:'webcam', config: { mode: 'traffic' } })
+      setNewCam({ name: '', source: '0', type: 'webcam', config: { mode: 'traffic' } })
       onRefreshCameras() // Fetch all streams via prop instead of reload
     } catch (e) { alert("Error adding camera") }
   }
@@ -73,7 +73,7 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
     } finally {
       clearTimeout(safetyTimer)
       setLoadingCams(prev => ({ ...prev, [camId]: false }))
-      setTimeout(() => onRefreshCameras?.().catch?.(() => {}), 300)
+      setTimeout(() => onRefreshCameras?.().catch?.(() => { }), 300)
     }
   }
 
@@ -90,17 +90,17 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
     <div className="page-wrap">
       <div className="page-header">
         <h1 className="page-title">Cameras</h1>
-        <button className="btn-accent" onClick={() => setAdding(true)}><i className="fa-solid fa-plus"/> Add Camera</button>
+        <button className="btn-accent" onClick={() => setAdding(true)}><i className="fa-solid fa-plus" /> Add Camera</button>
       </div>
 
       {adding && (
-        <div className="modal-overlay" onClick={()=>setAdding(false)}>
-          <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-head"><span>Add New Camera</span><button className="icon-btn" onClick={()=>setAdding(false)}>✕</button></div>
+        <div className="modal-overlay" onClick={() => setAdding(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head"><span>Add New Camera</span><button className="icon-btn" onClick={() => setAdding(false)}>✕</button></div>
             <div className="modal-body">
               <label>Camera Name</label>
-              <input className="f-input" value={newCam.name} onChange={e=>setNewCam({...newCam,name:e.target.value})} placeholder="e.g. Main Gate Camera"/>
-              
+              <input className="f-input" value={newCam.name} onChange={e => setNewCam({ ...newCam, name: e.target.value })} placeholder="e.g. Main Gate Camera" />
+
               <label>Type</label>
               <select className="f-sel" value={newCam.type} onChange={handleTypeChange}>
                 <option value="webcam">Webcam</option>
@@ -110,7 +110,7 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
 
               <label>{newCam.type === 'file' ? 'Select Video File' : 'Source (webcam index or RTSP URL)'}</label>
               {newCam.type === 'file' ? (
-                <select className="f-sel" value={newCam.source} onChange={e=>setNewCam({...newCam, source:e.target.value})}>
+                <select className="f-sel" value={newCam.source} onChange={e => setNewCam({ ...newCam, source: e.target.value })}>
                   {testVideos.length === 0 ? (
                     <option value="">No test videos found in data/test_videos</option>
                   ) : (
@@ -118,17 +118,17 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
                   )}
                 </select>
               ) : (
-                <input className="f-input" value={newCam.source} onChange={e=>setNewCam({...newCam,source:e.target.value})} placeholder={newCam.type==='webcam' ? "0" : "rtsp://..."}/>
+                <input className="f-input" value={newCam.source} onChange={e => setNewCam({ ...newCam, source: e.target.value })} placeholder={newCam.type === 'webcam' ? "0" : "rtsp://..."} />
               )}
 
               <label>Camera Profile / Mode</label>
-              <select className="f-sel" value={newCam.config?.mode || 'traffic'} onChange={e=>setNewCam({...newCam, config: { ...newCam.config, mode: e.target.value }})}>
+              <select className="f-sel" value={newCam.config?.mode || 'traffic'} onChange={e => setNewCam({ ...newCam, config: { ...newCam.config, mode: e.target.value } })}>
                 <option value="traffic">Traffic Compliance (Speed & Stop Line)</option>
                 <option value="driver">Driver Monitor DMS (Drowsiness & Distraction)</option>
               </select>
             </div>
             <div className="modal-foot">
-              <button className="act-btn act-out" onClick={()=>setAdding(false)}>Cancel</button>
+              <button className="act-btn act-out" onClick={() => setAdding(false)}>Cancel</button>
               <button className="btn-accent" onClick={addCamera}>Add Camera</button>
             </div>
           </div>
@@ -138,7 +138,7 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
         {cameras.map(cam => {
           const isOnline = cam.status === 'online' || !!cam.runtime_status?.running
           return (
-            <div key={cam.id} className={`cam-tile${activeCam?.id===cam.id?' active':''}`}>
+            <div key={cam.id} className={`cam-tile${activeCam?.id === cam.id ? ' active' : ''}`}>
               <div className="cam-tile-video" id={`cam-tile-video-${cam.id}`} style={{ position: 'relative' }}>
                 {loadingCams[cam.id] && (
                   <div style={{
@@ -186,47 +186,47 @@ export default function CamerasPage({ cameras, activeCam, onCamSwitch, onNavigat
                     fontSize: '11px',
                     gap: '8px'
                   }}>
-                    <i className="fa-solid fa-video-slash" style={{ fontSize: '20px', color: '#ef4444' }}/>
+                    <i className="fa-solid fa-video-slash" style={{ fontSize: '20px', color: '#ef4444' }} />
                     <span>Stream Offline</span>
                   </div>
                 )}
-                <div className="cam-tile-badge" style={{backgroundColor: isOnline ? '#065f46' : '#7f1d1d', color: '#fff'}}>{isOnline ? 'online' : 'offline'}</div>
-                <button className="icon-btn" 
-                        style={{position:'absolute', bottom: 8, right: 8, background:'rgba(0,0,0,0.5)', borderRadius:'4px', color:'#fff'}} 
-                        onClick={(e)=>handleFullscreen(e, cam.id)} title="Fullscreen">
+                <div className="cam-tile-badge" style={{ backgroundColor: isOnline ? '#065f46' : '#7f1d1d', color: '#fff' }}>{isOnline ? 'online' : 'offline'}</div>
+                <button className="icon-btn"
+                  style={{ position: 'absolute', bottom: 8, right: 8, background: 'rgba(0,0,0,0.5)', borderRadius: '4px', color: '#fff' }}
+                  onClick={(e) => handleFullscreen(e, cam.id)} title="Fullscreen">
                   <i className="fa-solid fa-expand" />
                 </button>
               </div>
               <div className="cam-tile-info">
                 <div className="cam-tile-name">{cam.name}</div>
-                <div className="cam-tile-sub" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>Source: {cam.source}</div>
-                <div className="cam-tile-sub" style={{fontSize: '11px', color: '#10b981', marginTop: '2px', fontWeight: '500'}}>
-                   Mode: {JSON.parse(cam.config_json || '{}').mode === 'driver' ? 'Driver Monitor (DMS)' : 'Traffic Compliance'}
+                <div className="cam-tile-sub" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Source: {cam.source}</div>
+                <div className="cam-tile-sub" style={{ fontSize: '11px', color: '#10b981', marginTop: '2px', fontWeight: '500' }}>
+                  Mode: {JSON.parse(cam.config_json || '{}').mode === 'driver' ? 'Driver Monitor (DMS)' : 'Traffic Compliance'}
                 </div>
-                <div className="cam-tile-actions" style={{marginTop: '12px'}}>
-                  <button className="act-btn act-green" onClick={()=>handleViewLive(cam.id)}>View Live</button>
-                  <button className={`act-btn ${isOnline ? 'act-red' : 'act-out'}`} 
-                          onClick={()=>toggleDetection(cam.id, cam.status, !!cam.runtime_status?.running)}
-                          disabled={!!loadingCams[cam.id]}>
+                <div className="cam-tile-actions" style={{ marginTop: '12px' }}>
+                  <button className="act-btn act-green" onClick={() => handleViewLive(cam.id)}>View Live</button>
+                  <button className={`act-btn ${isOnline ? 'act-red' : 'act-out'}`}
+                    onClick={() => toggleDetection(cam.id, cam.status, !!cam.runtime_status?.running)}
+                    disabled={!!loadingCams[cam.id]}>
                     {loadingCams[cam.id] ? (
                       <>
-                        <i className="fa-solid fa-circle-notch fa-spin" style={{marginRight: '4px'}}/>
+                        <i className="fa-solid fa-circle-notch fa-spin" style={{ marginRight: '4px' }} />
                         {isOnline ? 'Stopping...' : 'Starting...'}
                       </>
                     ) : (
                       <>
-                        <i className={`fa-solid ${isOnline ? 'fa-stop' : 'fa-play'}`} style={{marginRight: '4px'}}/>
+                        <i className={`fa-solid ${isOnline ? 'fa-stop' : 'fa-play'}`} style={{ marginRight: '4px' }} />
                         {isOnline ? 'Stop' : 'Start'}
                       </>
                     )}
                   </button>
-                  <button className="act-btn act-out" onClick={()=>removeCamera(cam.id)}><i className="fa-solid fa-trash"/></button>
+                  <button className="act-btn act-out" onClick={() => removeCamera(cam.id)}><i className="fa-solid fa-trash" /></button>
                 </div>
               </div>
             </div>
           )
         })}
-        {cameras.length === 0 && <div className="empty-state"><i className="fa-solid fa-video-slash"/><p>No cameras found. Add one to get started.</p></div>}
+        {cameras.length === 0 && <div className="empty-state"><i className="fa-solid fa-video-slash" /><p>No cameras found. Add one to get started.</p></div>}
       </div>
 
     </div>

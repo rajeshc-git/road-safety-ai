@@ -304,7 +304,16 @@ export default function App() {
             }
           }
         } else if (msg.type === 'plate_updated') {
-          // OCR completed asynchronously: update events list in place and refresh
+          // Immediately update events list in state for instant UI response (0ms)
+          if (msg.event_id && msg.license_plate) {
+            setEvents(prev => prev.map(e => e.id === msg.event_id ? {
+              ...e,
+              license_plate: msg.license_plate,
+              metadata_json: typeof e.metadata_json === 'string'
+                ? JSON.stringify({ ...(() => { try { return JSON.parse(e.metadata_json) } catch { return {} } })(), license_plate: msg.license_plate, plate_ar: msg.plate_ar })
+                : { ...(e.metadata_json || {}), license_plate: msg.license_plate, plate_ar: msg.plate_ar }
+            } : e))
+          }
           setEventTrigger(prev => prev + 1)
           loadEventsRef.current()
         } else if (msg.type === 'ocr_toast') {

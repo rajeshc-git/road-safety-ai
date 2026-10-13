@@ -32,7 +32,7 @@ export async function startWebRTCStream(camId, videoElement, onStateChange) {
     pc.ontrack = (event) => {
       if (videoElement && event.streams[0]) {
         videoElement.srcObject = event.streams[0]
-        videoElement.play().catch(() => {})
+        videoElement.play().catch(() => { })
         if (onStateChange) onStateChange('connected')
       }
     }

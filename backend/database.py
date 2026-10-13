@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS events (
     vehicle_id    INTEGER,
     status        TEXT    NOT NULL DEFAULT 'Pending',
     snapshot_path TEXT,
+    license_plate TEXT,
     metadata_json TEXT    NOT NULL DEFAULT '{}',
     FOREIGN KEY (camera_id) REFERENCES cameras(id)
 );
@@ -72,6 +73,7 @@ DEFAULT_SETTINGS = {
     "local_ocr_backend": "easyocr",
     "ai_runner_endpoint": "http://host.docker.internal:12434",
     "ai_runner_model": "",
+    "ai_ocr_delay": "1.5",
 }
 
 
@@ -83,6 +85,29 @@ def init_db():
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA busy_timeout=15000;")
         conn.executescript(SCHEMA)
+
+        # Automatic schema migration: ensure license_plate column exists
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN license_plate TEXT;")
+        except Exception:
+            pass
+
+        # Backfill license_plate column from metadata_json if column is empty
+        try:
+            rows = conn.execute("SELECT id, metadata_json FROM events WHERE license_plate IS NULL").fetchall()
+            for r_id, meta_raw in rows:
+                if meta_raw:
+                    try:
+                        m = json.loads(meta_raw)
+                        lp = m.get("license_plate")
+                        if lp and lp != "PROCESSING":
+                            conn.execute("UPDATE events SET license_plate=? WHERE id=?", (lp, r_id))
+                    except Exception:
+                        pass
+            conn.commit()
+        except Exception:
+            pass
+
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
@@ -187,14 +212,15 @@ async def insert_event(
     metadata: Dict = None,
 ) -> int:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lp = (metadata or {}).get("license_plate")
     async with get_db() as db:
         cur = await db.execute(
             """INSERT INTO events (camera_id, camera_name, timestamp, event_type,
-               vehicle_id, status, snapshot_path, metadata_json)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               vehicle_id, status, snapshot_path, license_plate, metadata_json)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 camera_id, camera_name, ts, event_type,
-                vehicle_id, "Pending", snapshot_path,
+                vehicle_id, "Pending", snapshot_path, lp,
                 json.dumps(metadata or {}),
             ),
         )
@@ -312,8 +338,16 @@ async def update_event_status(event_id: int, status: str):
         await db.commit()
 
 
+async def get_event(event_id: int) -> Optional[Dict]:
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM events WHERE id=?", (event_id,)) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
 async def update_event_license_plate(event_id: int, plate_en: str, plate_ar: Optional[str] = None):
-    """Update event metadata with license plate when OCR finishes asynchronously."""
+    """Update event metadata and license_plate column when OCR finishes asynchronously."""
     async with get_db() as db:
         async with db.execute("SELECT metadata_json FROM events WHERE id=?", (event_id,)) as cur:
             row = await cur.fetchone()
@@ -321,10 +355,17 @@ async def update_event_license_plate(event_id: int, plate_en: str, plate_ar: Opt
         metadata["license_plate"] = plate_en
         if plate_ar:
             metadata["plate_ar"] = plate_ar
-        await db.execute(
-            "UPDATE events SET metadata_json=? WHERE id=?",
-            (json.dumps(metadata), event_id)
-        )
+        try:
+            await db.execute(
+                "UPDATE events SET license_plate=?, metadata_json=? WHERE id=?",
+                (plate_en, json.dumps(metadata), event_id)
+            )
+        except Exception:
+            # Fallback if license_plate column is temporarily unavailable
+            await db.execute(
+                "UPDATE events SET metadata_json=? WHERE id=?",
+                (json.dumps(metadata), event_id)
+            )
         await db.commit()
 
 

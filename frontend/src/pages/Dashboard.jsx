@@ -207,6 +207,7 @@ function EventCard({ ev, onImageClick }) {
   return (
     <div className="ev-card" style={{ width: '145px', minWidth: '145px' }}>
       <div className="ev-thumb" style={{ height: '82px', cursor: 'pointer', position: 'relative' }} onClick={() => onImageClick && onImageClick({
+        id: ev.id,
         src: snapshotUrl(ev.snapshot_path),
         licensePlate: detectedPlate,
         plateAr: plateAr,
@@ -217,6 +218,24 @@ function EventCard({ ev, onImageClick }) {
       })}>
         <img src={snapshotUrl(ev.snapshot_path)} alt="snap"
           onError={e => { e.target.style.display = 'none' }} />
+        {detectedPlate && detectedPlate.toUpperCase() === 'PROCESSING' && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(7, 10, 20, 0.72)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '3px',
+            backdropFilter: 'blur(1.5px)',
+            border: '1px solid rgba(56, 189, 248, 0.45)',
+            zIndex: 3
+          }}>
+            <i className="fa-solid fa-spinner fa-spin" style={{ color: '#38bdf8', fontSize: '11px' }} />
+            <span style={{ color: '#38bdf8', fontSize: '7.5px', fontWeight: '700', letterSpacing: '0.4px' }}>AI SCANNING</span>
+          </div>
+        )}
         {metadata.crossed_line_idx !== undefined && metadata.crossed_line_idx !== null && (
           <span style={{
             position: 'absolute',
@@ -549,6 +568,25 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
               </div>
             </>
           )}
+
+          <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', fontSize: '11px' }}>
+              <span>AI OCR Processing Gap / Cooldown</span>
+              <span style={{ color: '#38bdf8', fontWeight: '700' }}>{vals.ai_ocr_delay || '1.5'}s</span>
+            </div>
+            <input
+              type="range"
+              min="0.2"
+              max="5.0"
+              step="0.1"
+              value={vals.ai_ocr_delay || '1.5'}
+              onChange={sl('ai_ocr_delay')}
+              style={{ width: '100%' }}
+            />
+            <span style={{ fontSize: '9px', color: 'var(--t3)' }}>
+              Cooldown between consecutive OCR jobs. Ensures local AI model / GPU releases context so every car plate is recognized accurately.
+            </span>
+          </div>
         </>}
         {tab === 'storage' && <>
           <div className="s-group-title">Storage Settings</div>
@@ -710,15 +748,18 @@ function EventsTable({ cameras, onNavigate, onImageClick, eventTrigger }) {
                   <td><img src={snapshotUrl(ev.snapshot_path)} className="tbl-img" alt="" style={{ cursor: 'pointer' }} onClick={() => {
                     const dp = ev.license_plate || meta.license_plate || meta.number_plate || ev.number_plate || null
                     const pa = meta.plate_ar || meta.license_plate_ar || null
-                    onImageClick && onImageClick({
-                      src: snapshotUrl(ev.snapshot_path),
-                      licensePlate: dp,
-                      plateAr: pa,
-                      cameraName: ev.camera_name,
-                      eventType: ev.event_type || 'Did Not Stop',
-                      timestamp: ev.timestamp,
-                      crossedLineIdx: meta.crossed_line_idx
-                    })
+                    if (onImageClick) {
+                      onImageClick({
+                        id: ev.id,
+                        src: snapshotUrl(ev.snapshot_path),
+                        licensePlate: dp,
+                        plateAr: pa,
+                        cameraName: ev.camera_name,
+                        eventType: ev.event_type || 'Did Not Stop',
+                        timestamp: ev.timestamp,
+                        crossedLineIdx: meta.crossed_line_idx
+                      })
+                    }
                   }} onError={e => e.target.style.display = 'none'} /></td>
                 </tr>
               )
@@ -1916,9 +1957,10 @@ function SaudiPlate({ licensePlate }) {
   );
 }
 
-function ImageModal({ preview, onClose }) {
+function ImageModal({ preview, onClose, onReprocess }) {
   if (!preview) return null;
   const src = typeof preview === 'string' ? preview : preview.src;
+  const eventId = typeof preview === 'object' ? preview.id : null;
   const licensePlate = typeof preview === 'object' ? preview.licensePlate : null;
   const plateAr = typeof preview === 'object' ? preview.plateAr : null;
   const cameraName = typeof preview === 'object' ? preview.cameraName : null;
@@ -2006,6 +2048,44 @@ function ImageModal({ preview, onClose }) {
               borderRadius: '4px',
               boxShadow: '0 12px 40px rgba(0,0,0,0.5)'
             }} />
+
+            {/* Live AI Scanner Loading Overlay on Evidence Image */}
+            {licensePlate && licensePlate.toUpperCase() === 'PROCESSING' && (
+              <div style={{
+                position: 'absolute',
+                inset: 16,
+                borderRadius: '4px',
+                background: 'rgba(7, 10, 20, 0.65)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+                pointerEvents: 'none',
+                zIndex: 10,
+                border: '1px solid rgba(56, 189, 248, 0.45)',
+                backdropFilter: 'blur(2px)'
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: 'rgba(15, 23, 42, 0.9)',
+                  border: '1px solid #38bdf8',
+                  color: '#38bdf8',
+                  padding: '8px 16px',
+                  borderRadius: '24px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  letterSpacing: '0.6px',
+                  boxShadow: '0 0 25px rgba(56, 189, 248, 0.45)'
+                }}>
+                  <i className="fa-solid fa-spinner fa-spin" />
+                  <span>AI SCANNING NUMBER PLATE...</span>
+                </div>
+                <span style={{ fontSize: '9px', color: '#94a3b8' }}>Model inference in progress</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -2054,7 +2134,24 @@ function ImageModal({ preview, onClose }) {
             <span style={{ fontSize: '9px', color: 'var(--t3)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
               Identified Plate
             </span>
-            {licensePlate ? (
+            {licensePlate && licensePlate.toUpperCase() === 'PROCESSING' ? (
+              <div style={{
+                background: 'rgba(56, 189, 248, 0.08)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                borderRadius: '6px',
+                padding: '16px',
+                textAlign: 'center',
+                color: '#38bdf8',
+                fontSize: '11px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: '18px', color: '#38bdf8' }} />
+                <span style={{ fontWeight: '700', letterSpacing: '0.5px' }}>Scanning License Plate...</span>
+              </div>
+            ) : licensePlate && licensePlate.toUpperCase() !== 'NOT CLEAR' ? (
               <SaudiPlate licensePlate={licensePlate} plateAr={plateAr} />
             ) : (
               <div style={{
@@ -2073,6 +2170,33 @@ function ImageModal({ preview, onClose }) {
                 <i className="fa-solid fa-eye-slash" style={{ fontSize: '16px', opacity: 0.6 }} />
                 <span>Plate text is not clear</span>
               </div>
+            )}
+
+            {eventId && onReprocess && (!eventType || eventType === 'Did Not Stop' || eventType.includes('Pedestrian')) && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => onReprocess(eventId)}
+                disabled={licensePlate && licensePlate.toUpperCase() === 'PROCESSING'}
+                style={{
+                  marginTop: '8px',
+                  width: '100%',
+                  padding: '7px 12px',
+                  fontSize: '11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: 'rgba(56, 189, 248, 0.1)',
+                  borderColor: 'rgba(56, 189, 248, 0.35)',
+                  color: '#38bdf8',
+                  borderRadius: '6px',
+                  cursor: (licensePlate && licensePlate.toUpperCase() === 'PROCESSING') ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <i className={`fa-solid fa-rotate ${(licensePlate && licensePlate.toUpperCase() === 'PROCESSING') ? 'fa-spin' : ''}`} />
+                <span>{licensePlate && licensePlate.toUpperCase() === 'PROCESSING' ? 'Processing...' : 'Post-Process / Re-Scan OCR'}</span>
+              </button>
             )}
           </div>
 
@@ -2129,6 +2253,36 @@ export default function Dashboard({ cameras, activeCam, stats, events, settings,
   const [previewImg, setPreviewImg] = useState(null)
   const [stopLines, setStopLines] = useState([])
   const [isDrawingZone, setIsDrawingZone] = useState(false)
+
+  const handleReprocessOcr = async (id) => {
+    try {
+      await api.post(`/api/events/${id}/reprocess-ocr`)
+      if (previewImg && previewImg.id === id) {
+        setPreviewImg(prev => ({ ...prev, licensePlate: 'PROCESSING' }))
+      }
+      if (onRefreshEvents) onRefreshEvents()
+    } catch (e) {
+      console.error("Failed to reprocess OCR", e)
+    }
+  }
+
+  // Sync open preview modal if its license plate was resolved asynchronously
+  useEffect(() => {
+    if (previewImg && events && events.length) {
+      const match = events.find(e => e.id === previewImg.id)
+      if (match) {
+        let meta = {}
+        try {
+          meta = typeof match.metadata_json === 'string' ? JSON.parse(match.metadata_json) : (match.metadata_json || {})
+        } catch {}
+        const dp = match.license_plate || meta.license_plate || meta.number_plate || null
+        const pa = meta.plate_ar || meta.license_plate_ar || null
+        if (dp && dp !== previewImg.licensePlate) {
+          setPreviewImg(prev => prev ? ({ ...prev, licensePlate: dp, plateAr: pa }) : null)
+        }
+      }
+    }
+  }, [events, previewImg?.id])
 
   const camConfig = JSON.parse(activeCam?.config_json || '{}')
   const isDms = camConfig.mode === 'driver'
@@ -2249,7 +2403,7 @@ export default function Dashboard({ cameras, activeCam, stats, events, settings,
       </div>
 
       {/* Image zoom modal popup */}
-      <ImageModal preview={previewImg} onClose={() => setPreviewImg(null)} />
+      <ImageModal preview={previewImg} onClose={() => setPreviewImg(null)} onReprocess={handleReprocessOcr} />
     </div>
   )
 }
