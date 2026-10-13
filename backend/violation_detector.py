@@ -31,6 +31,102 @@ def _save_violation_images(snap_path: Optional[str], frame, crop_path: Optional[
 _ocr_readers = {}
 _ocr_lock = threading.Lock()
 
+# Sequential Background OCR Queue
+_ocr_queue: Optional[asyncio.Queue] = None
+_ocr_worker_task: Optional[asyncio.Task] = None
+
+
+async def _ocr_queue_consumer():
+    """Background consumer that processes vehicle OCR crops sequentially one-by-one."""
+    while True:
+        try:
+            item = await _ocr_queue.get()
+            if item is None:
+                break
+            (
+                camera_id,
+                event_id,
+                crop_copy,
+                frame_copy,
+                box,
+                snap_path,
+                crop_path,
+                filename,
+                crop_filename,
+                quality,
+                x1c,
+                y1c,
+            ) = item
+
+            try:
+                # Run OCR extraction asynchronously in threadpool
+                _, plate_en, plate_coords = await asyncio.to_thread(_extract_license_plate, crop_copy)
+                resolved_plate = plate_en if (plate_en and plate_en.strip()) else "NOT CLEAR"
+
+                # Update database event with resolved plate status
+                await db.update_event_license_plate(event_id, resolved_plate)
+
+                # Draw green bounding box & label onto crop and full frame snapshots if plate detected
+                if plate_coords and resolved_plate != "NOT CLEAR":
+                    px1, py1, px2, py2 = plate_coords
+                    cv.rectangle(crop_copy, (px1, py1), (px2, py2), (0, 220, 60), 3)
+                    cv.rectangle(crop_copy, (px1, py1 - 22), (px1 + len(resolved_plate) * 11 + 10, py1), (0, 220, 60), cv.FILLED)
+                    cv.putText(crop_copy, resolved_plate, (px1 + 5, py1 - 6), cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
+
+                    if frame_copy is not None:
+                        fx1 = x1c + px1
+                        fy1 = y1c + py1
+                        fx2 = x1c + px2
+                        fy2 = y1c + py2
+                        cv.rectangle(frame_copy, (fx1, fy1), (fx2, fy2), (0, 220, 60), 3)
+                        cv.rectangle(frame_copy, (fx1, fy1 - 25), (fx1 + len(resolved_plate) * 14 + 10, fy1), (0, 220, 60), cv.FILLED)
+                        cv.putText(frame_copy, resolved_plate, (fx1 + 5, fy1 - 8), cv.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv.LINE_AA)
+
+                    # Update saved images on disk with bounding box overlays
+                    await asyncio.to_thread(_save_violation_images, snap_path, frame_copy, crop_path, crop_copy, quality)
+
+                    # Update MinIO storage
+                    if filename and frame_copy is not None:
+                        ok_f, f_buf = cv.imencode(".jpg", frame_copy, [cv.IMWRITE_JPEG_QUALITY, quality])
+                        if ok_f:
+                            await minio_service.upload_snapshot_bytes(filename, f_buf.tobytes())
+                    if crop_filename and crop_copy is not None and crop_copy.size > 0:
+                        ok_c, c_buf = cv.imencode(".jpg", crop_copy, [cv.IMWRITE_JPEG_QUALITY, quality])
+                        if ok_c:
+                            await minio_service.upload_snapshot_bytes(crop_filename, c_buf.tobytes())
+
+                # Notify UI via WebSocket that license plate is resolved
+                from camera_manager import get_camera_manager
+                cm = get_camera_manager()
+                if cm:
+                    await cm.broadcast_plate_update(camera_id, event_id, resolved_plate)
+                    if resolved_plate != "NOT CLEAR":
+                        await cm.broadcast_ocr_toast(f"Plate '{resolved_plate}' identified", toast_type="success", title="OCR Complete")
+
+            except Exception as ocr_err:
+                print(f"  [OCR Background] Error: {ocr_err}")
+                await db.update_event_license_plate(event_id, "NOT CLEAR")
+                from camera_manager import get_camera_manager
+                cm = get_camera_manager()
+                if cm:
+                    await cm.broadcast_plate_update(camera_id, event_id, "NOT CLEAR")
+            finally:
+                _ocr_queue.task_done()
+        except asyncio.CancelledError:
+            break
+        except Exception as q_err:
+            print(f"  [OCR Queue] Consumer error: {q_err}")
+
+
+def enqueue_ocr_job(job_tuple):
+    """Enqueues an OCR task to the sequential background queue."""
+    global _ocr_queue, _ocr_worker_task
+    if _ocr_queue is None:
+        _ocr_queue = asyncio.Queue()
+    if _ocr_worker_task is None or _ocr_worker_task.done():
+        _ocr_worker_task = asyncio.create_task(_ocr_queue_consumer())
+    _ocr_queue.put_nowait(job_tuple)
+
 
 def get_ocr_reader(preferred_backend: str = "easyocr"):
     """Lazy initializer supporting EasyOCR or PaddleOCR based on user setting."""
@@ -572,7 +668,7 @@ async def handle_violation(
     else:
         resolved_event = event_type
 
-    # 1. Immediately insert event into database (lightning fast - no OCR delay)
+    # 1. Immediately insert event into database with PROCESSING status
     event_id = await db.insert_event(
         camera_id=camera_id,
         camera_name=camera_name,
@@ -585,13 +681,13 @@ async def handle_violation(
             "pedestrian_involved": pedestrian_involved,
             "timestamp": ts.isoformat(),
             "is_dms": is_dms,
-            "license_plate": None,
+            "license_plate": None if is_dms else "PROCESSING",
             "plate_ar": None,
             "crossed_line_idx": crossed_line_idx,
         },
     )
 
-    # 2. Immediately publish initial violation to Redis Pub/Sub so UI displays event in 0ms
+    # 2. Immediately publish initial violation to Redis Pub/Sub so UI displays event in 0ms with Scanning/Processing badge
     await redis_service.publish_violation({
         "id": event_id,
         "camera_id": camera_id,
@@ -600,67 +696,30 @@ async def handle_violation(
         "vehicle_id": vehicle_id if not is_dms else 0,
         "snapshot_path": filename,
         "crop_path": crop_filename,
-        "license_plate": None,
+        "license_plate": None if is_dms else "PROCESSING",
         "timestamp": ts.isoformat(),
         "pedestrian_involved": pedestrian_involved,
         "crossed_line_idx": crossed_line_idx,
     })
 
-    # 3. Asynchronously perform OCR in background so the pipeline and camera never stutter or lag
+    # 3. Enqueue OCR in sequential background worker queue so cars are never skipped and API is never choked
     if not is_dms and crop is not None and crop.size > 0:
         crop_copy = crop.copy()
         frame_copy = frame.copy() if frame is not None else None
-        
-        async def _async_ocr_worker():
-            try:
-                # Run OCR extraction asynchronously in threadpool
-                _, plate_en, plate_coords = await asyncio.to_thread(_extract_license_plate, crop_copy)
-                if not plate_en:
-                    return
-
-                # Update database event with resolved plate
-                await db.update_event_license_plate(event_id, plate_en)
-
-                # Draw green bounding box & label onto crop and full frame snapshots
-                if plate_coords:
-                    px1, py1, px2, py2 = plate_coords
-                    cv.rectangle(crop_copy, (px1, py1), (px2, py2), (0, 220, 60), 3)
-                    cv.rectangle(crop_copy, (px1, py1 - 22), (px1 + len(plate_en) * 11 + 10, py1), (0, 220, 60), cv.FILLED)
-                    cv.putText(crop_copy, plate_en, (px1 + 5, py1 - 6), cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
-
-                    if frame_copy is not None:
-                        fx1 = x1c + px1
-                        fy1 = y1c + py1
-                        fx2 = x1c + px2
-                        fy2 = y1c + py2
-                        cv.rectangle(frame_copy, (fx1, fy1), (fx2, fy2), (0, 220, 60), 3)
-                        cv.rectangle(frame_copy, (fx1, fy1 - 25), (fx1 + len(plate_en) * 14 + 10, fy1), (0, 220, 60), cv.FILLED)
-                        cv.putText(frame_copy, plate_en, (fx1 + 5, fy1 - 8), cv.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv.LINE_AA)
-
-                    # Update saved images on disk with bounding box overlays
-                    await asyncio.to_thread(_save_violation_images, snap_path, frame_copy, crop_path, crop_copy, quality)
-
-                    # Update MinIO storage
-                    if filename and frame_copy is not None:
-                        ok_f, f_buf = cv.imencode(".jpg", frame_copy, [cv.IMWRITE_JPEG_QUALITY, quality])
-                        if ok_f:
-                            await minio_service.upload_snapshot_bytes(filename, f_buf.tobytes())
-                    if crop_filename and crop_copy is not None and crop_copy.size > 0:
-                        ok_c, c_buf = cv.imencode(".jpg", crop_copy, [cv.IMWRITE_JPEG_QUALITY, quality])
-                        if ok_c:
-                            await minio_service.upload_snapshot_bytes(crop_filename, c_buf.tobytes())
-
-                # Notify UI via WebSocket that license plate is resolved
-                from camera_manager import get_camera_manager
-                cm = get_camera_manager()
-                if cm:
-                    await cm.broadcast_plate_update(camera_id, event_id, plate_en)
-                    await cm.broadcast_ocr_toast(f"Plate '{plate_en}' identified via OCR.space", toast_type="success", title="OCR.space Active")
-
-            except Exception as ocr_err:
-                print(f"  [OCR Background] Error: {ocr_err}")
-
-        # Spawn background task immediately (non-blocking)
-        asyncio.create_task(_async_ocr_worker())
+        job_data = (
+            camera_id,
+            event_id,
+            crop_copy,
+            frame_copy,
+            box,
+            snap_path,
+            crop_path,
+            filename,
+            crop_filename,
+            quality,
+            x1c,
+            y1c,
+        )
+        enqueue_ocr_job(job_data)
 
 

@@ -208,7 +208,24 @@ function ImageModal({ preview, onClose }) {
             <span style={{ fontSize: '9px', color: 'var(--t3)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
               Identified Plate
             </span>
-            {licensePlate ? (
+            {licensePlate && licensePlate.toUpperCase() === 'PROCESSING' ? (
+              <div style={{
+                background: 'rgba(56, 189, 248, 0.08)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                borderRadius: '6px',
+                padding: '16px',
+                textAlign: 'center',
+                color: '#38bdf8',
+                fontSize: '11px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: '18px', color: '#38bdf8' }} />
+                <span style={{ fontWeight: '700', letterSpacing: '0.5px' }}>Scanning License Plate...</span>
+              </div>
+            ) : licensePlate && licensePlate.toUpperCase() !== 'NOT CLEAR' ? (
               <SaudiPlate licensePlate={licensePlate} plateAr={plateAr} />
             ) : (
               <div style={{
@@ -909,7 +926,23 @@ export default function EventsPage({ cameras, eventTrigger }) {
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                             <span style={{ fontSize: '9.5px', color: 'var(--t2)', fontWeight: '600' }}>ID: {ev.vehicle_id}</span>
-                            {dp ? (
+                            {dp && dp.toUpperCase() === 'PROCESSING' ? (
+                              <span style={{
+                                fontSize: '8px',
+                                background: 'rgba(56, 189, 248, 0.12)',
+                                color: '#38bdf8',
+                                border: '1px solid rgba(56, 189, 248, 0.4)',
+                                borderRadius: '2px',
+                                padding: '2px 5px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                fontWeight: '700'
+                              }}>
+                                <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: '7.5px' }} />
+                                Scanning...
+                              </span>
+                            ) : dp && dp.toUpperCase() !== 'NOT CLEAR' ? (
                               <div style={{
                                 background: '#fff',
                                 color: '#000',

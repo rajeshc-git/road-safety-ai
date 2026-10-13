@@ -257,7 +257,24 @@ function EventCard({ ev, onImageClick }) {
         ) : (
           <>
             <div className="ev-vid">ID: {vid}</div>
-            {detectedPlate ? (
+            {detectedPlate && detectedPlate.toUpperCase() === 'PROCESSING' ? (
+              <div className="plate" style={{
+                background: 'rgba(56, 189, 248, 0.12)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                borderRadius: '3px',
+                padding: '4px 6px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '5px'
+              }}>
+                <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: '9px' }} />
+                <div className="plate-en" style={{ fontSize: '8px', fontWeight: '700', letterSpacing: '0.6px', textTransform: 'uppercase' }}>
+                  Scanning...
+                </div>
+              </div>
+            ) : detectedPlate && detectedPlate.toUpperCase() !== 'NOT CLEAR' ? (
               <div className="plate">
                 {plateAr && <div className="plate-ar">{plateAr}</div>}
                 <div className="plate-en">{detectedPlate}</div>
