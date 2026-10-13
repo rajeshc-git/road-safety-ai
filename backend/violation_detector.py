@@ -314,19 +314,26 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
 
     # Standard OpenAI compatible /v1/chat/completions (Docker Model Runner, Ollama, vLLM, LMStudio, etc.)
     url = f"{base_url}/v1/chat/completions"
+    system_msg = (
+        "You are an automated license plate reader. Read strictly the license plate letters and numbers clearly visible "
+        "on the vehicle bumper in the image. If the license plate is blurry, unreadable, obscured, or not clearly visible, "
+        "output NONE. Never invent, guess, or hallucinate plate characters."
+    )
+    user_msg = "Read the vehicle license plate from this bumper image. If not legible or not clearly visible, output NONE. Output ONLY the license plate characters or NONE."
+
     payload = {
         "model": model,
         "messages": [
+            {
+                "role": "system",
+                "content": system_msg
+            },
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            "Extract ONLY the vehicle license plate numbers and English letters from this image. "
-                            "Do NOT include car brand names or conversational text. "
-                            "Output only the plate characters, e.g. '1234 ABC'."
-                        )
+                        "text": user_msg
                     },
                     {
                         "type": "image_url",
@@ -337,8 +344,8 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
                 ]
             }
         ],
-        "temperature": 0.1,
-        "max_tokens": 40
+        "temperature": 0.0,
+        "max_tokens": 20
     }
 
     try:
@@ -354,9 +361,14 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
             fallback_url = f"{base_url}/api/generate"
             fb_payload = {
                 "model": model,
-                "prompt": "Extract strictly the license plate letters and numbers from this car crop without brand names.",
+                "system": system_msg,
+                "prompt": user_msg,
                 "images": [b64_img],
-                "stream": False
+                "stream": False,
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 20
+                }
             }
             fb_resp = requests.post(fallback_url, json=fb_payload, timeout=20)
             if fb_resp.status_code == 200:
@@ -364,21 +376,27 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
 
         if raw_text:
             cleaned = re.sub(r'[^A-Za-z0-9\s]', '', raw_text).strip()
+            upper_raw = cleaned.upper().strip()
+
+            # If the model indicates plate is not visible or unreadable, return None
+            if upper_raw in ("NONE", "NO", "NOT VISIBLE", "UNREADABLE", "NOT CLEAR", "NA", "N/A", "1234 ABC", "1234ABC"):
+                return None
+
             # If the model produced a conversational sentence instead of extracting a plate, reject it
             conversational_cues = [
                 "PLEASE PROVIDE", "UPLOAD THE IMAGE", "CANNOT SEE", "NO IMAGE",
                 "I CAN EXTRACT", "FOR YOU", "REFERRING TO", "ONCE YOU UPLOAD",
-                "SORRY", "AS AN AI", "I AM UNABLE", "THERE IS NO", "PLEASE UPLOAD"
+                "SORRY", "AS AN AI", "I AM UNABLE", "THERE IS NO", "PLEASE UPLOAD",
+                "NOT VISIBLE", "CANNOT READ", "UNABLE TO"
             ]
-            upper_raw = raw_text.upper()
-            if any(cue in upper_raw for cue in conversational_cues) or len(raw_text.split()) > 6:
-                print(f"  [AI Vision ({model})] Model returned conversational output instead of plate, skipping: {raw_text[:60]}...")
+            if any(cue in upper_raw for cue in conversational_cues) or len(raw_text.split()) > 5:
+                print(f"  [AI Vision ({model})] Model returned conversational output or cannot read plate, skipping: {raw_text[:60]}...")
                 return None
 
             brand_names = {"FORD", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "GMC", "CHEVROLET", "ISUZU"}
             words = [w.upper() for w in cleaned.split() if w.upper() not in brand_names]
             final = " ".join(words).strip()
-            if final and (any(c.isdigit() for c in final) or len(final) >= 3):
+            if final and final != "1234 ABC" and (any(c.isdigit() for c in final) or len(final) >= 3):
                 print(f"  [AI Vision ({model})] Successfully extracted license plate: '{final}'")
                 return final
     except Exception as e:
