@@ -85,10 +85,124 @@ def get_ocr_reader():
         return None, "none"
 
 
+def _call_ocr_space(image_bgr, api_key: str = "K89291931288957", engine: str = "2") -> list:
+    """Calls OCR.space REST API with image bytes, returns raw_detections list [(bbox, text, conf)]."""
+    import requests
+    ok, buf = cv.imencode(".jpg", image_bgr, [cv.IMWRITE_JPEG_QUALITY, 95])
+    if not ok:
+        return []
+    
+    # Engine defaults: 1, 2, or 3
+    engine_val = str(engine).strip()
+    if engine_val not in ("1", "2", "3"):
+        engine_val = "2"
+
+    url = "https://api.ocr.space/parse/image"
+    payload = {
+        "apikey": api_key or "K89291931288957",
+        "language": "eng",
+        "isOverlayRequired": "true",
+        "OCREngine": engine_val,
+        "detectOrientation": "false",
+        "scale": "true",
+    }
+    files = {
+        "file": ("plate.jpg", buf.tobytes(), "image/jpeg")
+    }
+
+    try:
+        resp = requests.post(url, data=payload, files=files, timeout=7)
+        if resp.status_code != 200:
+            raw_err = resp.text[:120]
+            is_429 = resp.status_code == 429 or "rate limit" in raw_err.lower() or "limit exceeded" in raw_err.lower()
+            err_title = "OCR.space Rate Limit Reached" if is_429 else f"OCR.space HTTP {resp.status_code}"
+            toast_t = "warning" if is_429 else "error"
+            toast_msg = "Rate limit reached for free plan (60 req/hr). Please switch engine or wait." if is_429 else f"HTTP {resp.status_code}: {raw_err}"
+            print(f"  [OCR.space] HTTP Error {resp.status_code}: {raw_err}")
+            from camera_manager import get_camera_manager
+            cm = get_camera_manager()
+            if cm and cm.loop:
+                asyncio.run_coroutine_threadsafe(
+                    cm.broadcast_ocr_toast(toast_msg, toast_type=toast_t, title=err_title),
+                    cm.loop
+                )
+            return []
+
+        data = resp.json()
+        if data.get("IsErroredOnProcessing"):
+            err_msg = data.get("ErrorMessage") or "Unknown processing error"
+            print(f"  [OCR.space] API Error: {err_msg}")
+            
+            # Detect rate limit or quota exceeded
+            is_limit = any(term in str(err_msg).lower() for term in ["rate limit", "quota", "limit reached", "maximum", "exceeded"])
+            toast_t = "warning" if is_limit else "error"
+            toast_title = "OCR.space Limit Reached" if is_limit else "OCR.space API Error"
+            
+            from camera_manager import get_camera_manager
+            cm = get_camera_manager()
+            if cm and cm.loop:
+                asyncio.run_coroutine_threadsafe(
+                    cm.broadcast_ocr_toast(str(err_msg), toast_type=toast_t, title=toast_title),
+                    cm.loop
+                )
+            return []
+
+        parsed_results = data.get("ParsedResults", [])
+        if not parsed_results:
+            return []
+
+        raw_detections = []
+        for pr in parsed_results:
+            text_overlay = pr.get("TextOverlay") or {}
+            lines = text_overlay.get("Lines", [])
+            for line in lines:
+                words = line.get("Words", [])
+                if words:
+                    # Provide word-level tokens so multi-tier plates can cluster digits and letters
+                    for w in words:
+                        w_text = (w.get("WordText") or "").strip()
+                        if w_text:
+                            wl = w.get("Left", 0)
+                            wt = w.get("Top", 0)
+                            ww = w.get("Width", 0)
+                            wh = w.get("Height", 0)
+                            w_bbox = [(wl, wt), (wl + ww, wt), (wl + ww, wt + wh), (wl, wt + wh)]
+                            raw_detections.append((w_bbox, w_text, 0.95))
+                else:
+                    line_text = (line.get("LineText") or "").strip()
+                    if line_text:
+                        bbox = [(0, 0), (image_bgr.shape[1], 0), (image_bgr.shape[1], image_bgr.shape[0]), (0, image_bgr.shape[0])]
+                        raw_detections.append((bbox, line_text, 0.90))
+
+            # Fallback to plain ParsedText if TextOverlay didn't break down lines
+            if not raw_detections and pr.get("ParsedText"):
+                raw_text = pr["ParsedText"].strip()
+                for line_s in raw_text.splitlines():
+                    s = line_s.strip()
+                    if s:
+                        bbox = [(0, 0), (image_bgr.shape[1], 0), (image_bgr.shape[1], image_bgr.shape[0]), (0, image_bgr.shape[0])]
+                        raw_detections.append((bbox, s, 0.85))
+
+        print(f"  [OCR.space] Engine {engine_val} returned {len(raw_detections)} tokens")
+        return raw_detections
+    except Exception as e:
+        print(f"  [OCR.space] Request failed: {e}")
+        from camera_manager import get_camera_manager
+        cm = get_camera_manager()
+        if cm and cm.loop:
+            asyncio.run_coroutine_threadsafe(
+                cm.broadcast_ocr_toast(f"Connection error: {str(e)[:60]}", toast_type="error", title="OCR.space Timeout"),
+                cm.loop
+            )
+        return []
+
+
 def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], Optional[Tuple[int, int, int, int]]]:
     """
     Extracts the license plate text (English only) from a vehicle crop.
-    Optimized to search only the lower-middle region where plates are located.
+    Supports OCR.space API (Engine 1, 2, 3) as configured in settings, with local EasyOCR/Paddle fallback.
+    Clusters adjacent tokens (both horizontal and stacked lines) so full plate digits and letters
+    are combined, and draws a generous bounding box wrapping the entire license plate.
     """
     if vehicle_crop is None or vehicle_crop.size == 0:
         return None, None, None
@@ -96,36 +210,136 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
     try:
         h, w = vehicle_crop.shape[:2]
         
-        # Bounding box crop: focus on bottom-middle to isolate the plate
-        # Excludes rear windows, roof, side wheels, and high-mounted logos (like "ISUZU")
-        y_start = int(h * 0.60)
-        y_end = int(h * 0.95)
-        x_start = int(w * 0.15)
-        x_end = int(w * 0.85)
+        # Bounding box crop: focus on wider bumper and grille area (35% to 98% height, 4% to 96% width)
+        # Guarantees complete plate badge is included across sedans, SUVs, pickups, and trucks
+        y_start = int(h * 0.35)
+        y_end = int(h * 0.98)
+        x_start = int(w * 0.04)
+        x_end = int(w * 0.96)
         
         lower_portion = vehicle_crop[y_start:y_end, x_start:x_end]
         if lower_portion.size == 0:
             return None, None, None
 
-        reader, backend = get_ocr_reader()
-        if not reader:
-            return None, None, None
+        # Check user runtime settings for OCR provider and engine
+        settings = get_runtime_settings()
+        ocr_provider = settings.get("ocr_provider", "ocr_space")
+        ocr_engine = settings.get("ocr_engine", "2")
+        ocr_api_key = settings.get("ocr_space_api_key", "K89291931288957")
+
+        # Resolution boost: upscale small plate regions to >=220px height for crisp edge clarity
+        lh, lw = lower_portion.shape[:2]
+        scale = max(2.0, 220.0 / max(1, lh))
+        ocr_input = cv.resize(lower_portion, None, fx=scale, fy=scale, interpolation=cv.INTER_CUBIC)
+
+        # First attempt: Detect high-contrast rectangular plate candidate in bumper area
+        # This provides a focused, high-resolution badge crop directly to OCR.space
+        plate_box_candidates = []
+        try:
+            gray = cv.cvtColor(lower_portion, cv.COLOR_BGR2GRAY)
+            grad_x = cv.Sobel(gray, cv.CV_32F, 1, 0, ksize=3)
+            grad_x = cv.convertScaleAbs(grad_x)
+            _, thresh = cv.threshold(grad_x, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+            kernel = cv.getStructuringElement(cv.MORPH_RECT, (17, 3))
+            morph = cv.morphologyEx(thresh, cv.MORPH_CLOSE, kernel)
+            contours, _ = cv.findContours(morph, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                cx, cy, cw, ch = cv.boundingRect(c)
+                aspect = cw / float(max(1, ch))
+                if 1.2 <= aspect <= 5.5 and (lw * 0.10) <= cw <= (lw * 0.70) and (lh * 0.08) <= ch <= (lh * 0.65):
+                    plate_box_candidates.append((cx, cy, cw, ch))
+            plate_box_candidates.sort(key=lambda b: -b[2] * b[3])
+        except Exception:
+            plate_box_candidates = []
 
         raw_detections = []
-        if backend == "easyocr":
-            with _ocr_lock:
-                results = reader.readtext(lower_portion)
-            for res in results:
-                if len(res) >= 3:
-                    bbox, text, conf = res[0], res[1], float(res[2])
-                    raw_detections.append((bbox, text, conf))
-        elif backend == "paddleocr":
-            results = reader.ocr(lower_portion, cls=False)
-            if results and results[0]:
-                for line in results[0]:
-                    bbox = line[0]
-                    text, conf = line[1][0], float(line[1][1])
-                    raw_detections.append((bbox, text, conf))
+
+        # 1. Primary: OCR.space API with focused candidate crop or bumper crop
+        if ocr_provider == "ocr_space":
+            # If a high-probability plate candidate was localized, zoom in and send it first
+            if plate_box_candidates:
+                bx, by, bw_cand, bh_cand = plate_box_candidates[0]
+                mx = int(bw_cand * 0.20)
+                my = int(bh_cand * 0.25)
+                cy1 = max(0, by - my)
+                cy2 = min(lh, by + bh_cand + my)
+                cx1 = max(0, bx - mx)
+                cx2 = min(lw, bx + bw_cand + mx)
+                cand_crop = lower_portion[cy1:cy2, cx1:cx2]
+                if cand_crop.size > 0:
+                    cand_scale = max(2.5, 180.0 / max(1, cand_crop.shape[0]))
+                    cand_input = cv.resize(cand_crop, None, fx=cand_scale, fy=cand_scale, interpolation=cv.INTER_CUBIC)
+                    cand_dets = _call_ocr_space(cand_input, api_key=ocr_api_key, engine=ocr_engine)
+                    if cand_dets:
+                        # Remap candidate detections to vehicle_crop space
+                        for bbox, text, conf in cand_dets:
+                            xs = [pt[0] / cand_scale for pt in bbox]
+                            ys = [pt[1] / cand_scale for pt in bbox]
+                            rbx1 = min(xs) + cx1
+                            rby1 = min(ys) + cy1
+                            rbx2 = max(xs) + cx1
+                            rby2 = max(ys) + cy1
+                            raw_detections.append(([(rbx1 * scale, rby1 * scale), (rbx2 * scale, rby1 * scale), (rbx2 * scale, rby2 * scale), (rbx1 * scale, rby2 * scale)], text, conf))
+
+            # If targeted candidate wasn't detected or returned nothing, send the entire bumper crop
+            if not raw_detections:
+                raw_detections = _call_ocr_space(ocr_input, api_key=ocr_api_key, engine=ocr_engine)
+
+            if not raw_detections and h >= 80:
+                # Retry OCR.space with entire lower vehicle if initial crop was tight
+                y_w_start = int(h * 0.25)
+                y_w_end = int(h * 1.0)
+                x_w_start = 0
+                x_w_end = w
+                wider_crop = vehicle_crop[y_w_start:y_w_end, x_w_start:x_w_end]
+                if wider_crop.size > 0:
+                    scale_w = max(2.0, 220.0 / max(1, wider_crop.shape[0]))
+                    wider_input = cv.resize(wider_crop, None, fx=scale_w, fy=scale_w, interpolation=cv.INTER_CUBIC)
+                    raw_detections = _call_ocr_space(wider_input, api_key=ocr_api_key, engine=ocr_engine)
+                    if raw_detections:
+                        x_start, y_start = x_w_start, y_w_start
+                        scale = scale_w
+
+        # 2. Local fallback ONLY if provider is explicitly set to 'local' or OCR.space is not selected
+        if not raw_detections and ocr_provider == "local":
+            reader, backend = get_ocr_reader()
+            if reader and backend == "easyocr":
+                with _ocr_lock:
+                    results = reader.readtext(ocr_input)
+                for res in results:
+                    if len(res) >= 3:
+                        bbox, text, conf = res[0], res[1], float(res[2])
+                        raw_detections.append((bbox, text, conf))
+            elif reader and backend == "paddleocr":
+                results = reader.ocr(ocr_input, cls=False)
+                if results and results[0]:
+                    for line in results[0]:
+                        bbox = line[0]
+                        text, conf = line[1][0], float(line[1][1])
+                        raw_detections.append((bbox, text, conf))
+
+        # Fallback to wider vertical crop if nothing was detected in the lower bumper section (local mode only)
+        if not raw_detections and ocr_provider == "local" and h >= 80:
+            y_start = int(h * 0.25)
+            y_end = int(h * 1.0)
+            x_start = 0
+            x_end = w
+            wider_crop = vehicle_crop[y_start:y_end, x_start:x_end]
+            if wider_crop.size > 0:
+                scale = max(2.0, 220.0 / max(1, wider_crop.shape[0]))
+                wider_input = cv.resize(wider_crop, None, fx=scale, fy=scale, interpolation=cv.INTER_CUBIC)
+                reader, backend = get_ocr_reader()
+                if reader and backend == "easyocr":
+                    with _ocr_lock:
+                        results = reader.readtext(wider_input)
+                    for res in results:
+                        if len(res) >= 3:
+                            raw_detections.append((res[0], res[1], float(res[2])))
+                elif reader and backend == "paddleocr":
+                    results = reader.ocr(wider_input, cls=False)
+                    if results and results[0]:
+                        for line in results[0]:
+                            raw_detections.append((line[0], line[1][0], float(line[1][1])))
 
         if not raw_detections:
             return None, None, None
@@ -141,71 +355,136 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
             import re
             return re.sub(r'\s+', ' ', "".join(cleaned)).strip()
 
-        # Evaluate each detected text line individually to prevent grille decals
-        candidates = []
+        # Parse detected tokens and filter out vehicle brand logos or empty text
+        brand_names = {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS", "GMC", "CHEVROLET"}
+        valid_items = []
         for bbox, text, conf in raw_detections:
             if conf < 0.20:
                 continue
             cleaned = clean_to_ascii_alnum(text)
-            if not cleaned:
+            if not cleaned or cleaned in brand_names:
                 continue
-                
-            # Apply strict license plate validation heuristics:
-            # 1. Plate must contain at least one digit
-            # 2. Length must be between 3 and 12 characters
-            # 3. Must not be a known vehicle brand name
-            has_digit = any(c.isdigit() for c in cleaned)
-            is_valid_len = 3 <= len(cleaned) <= 12
-            is_brand = cleaned in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
-            
-            if has_digit and is_valid_len and not is_brand:
-                candidates.append((cleaned, conf, bbox))
+
+            # Resolve bbox into (bx1, by1, bx2, by2)
+            if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and isinstance(bbox[0], (list, tuple)):
+                xs = [pt[0] for pt in bbox]
+                ys = [pt[1] for pt in bbox]
+                bx1, by1, bx2, by2 = min(xs), min(ys), max(xs), max(ys)
+            elif len(bbox) == 4 and not isinstance(bbox[0], (list, tuple)):
+                bx1, by1, bx2, by2 = bbox[0], bbox[1], bbox[2], bbox[3]
+            else:
+                continue
+
+            valid_items.append({
+                "text": cleaned,
+                "box": (float(bx1), float(by1), float(bx2), float(by2)),
+                "conf": float(conf),
+                "has_digit": any(c.isdigit() for c in cleaned),
+                "has_alpha": any(c.isalpha() for c in cleaned),
+            })
+
+        if not valid_items:
+            return None, None, None
+
+        # Plate clustering: Group nearby co-located items (e.g. '9079' stacked over '9569 UUD')
+        # Seed clusters with items containing digits
+        digit_items = [it for it in valid_items if it["has_digit"]]
+        anchors = digit_items if digit_items else valid_items
+
+        best_cluster = None
+        best_score = -1.0
+
+        for anchor in anchors:
+            ax1, ay1, ax2, ay2 = anchor["box"]
+            aw = max(20.0, ax2 - ax1)
+            ah = max(15.0, ay2 - ay1)
+            acx = (ax1 + ax2) / 2.0
+            acy = (ay1 + ay2) / 2.0
+
+            cluster = [anchor]
+            for other in valid_items:
+                if other is anchor:
+                    continue
+                ox1, oy1, ox2, oy2 = other["box"]
+                ocx = (ox1 + ox2) / 2.0
+                ocy = (oy1 + oy2) / 2.0
+                dx = abs(ocx - acx)
+                dy = abs(ocy - acy)
+
+                # License plate aspect ratio and spatial proximity threshold:
+                # Horizontally within 2.8x anchor width, vertically within 3.0x anchor height
+                if dx <= max(aw, 50.0) * 2.8 and dy <= max(ah, 30.0) * 3.0:
+                    cluster.append(other)
+
+            # Score cluster: prioritize combinations having both numbers and letters
+            has_d = any(c["has_digit"] for c in cluster)
+            has_a = any(c["has_alpha"] for c in cluster)
+            total_chars = sum(len(c["text"]) for c in cluster)
+            score = (120.0 if (has_d and has_a) else 60.0 if has_d else 10.0) + min(total_chars, 20.0)
+
+            if score > best_score:
+                best_score = score
+                best_cluster = cluster
 
         final_en = None
         coords = None
-        if candidates:
-            # Select the candidate with the highest confidence
-            best_candidate = max(candidates, key=lambda x: x[1])
-            final_en = best_candidate[0]
-            pts = best_candidate[2]
-            
-            # Map coords to vehicle_crop
-            xs = [pt[0] for pt in pts]
-            ys = [pt[1] for pt in pts]
-            bx1, by1 = min(xs), min(ys)
-            bx2, by2 = max(xs), max(ys)
-            
-            px1 = int(x_start + bx1)
-            py1 = int(y_start + by1)
-            px2 = int(x_start + bx2)
-            py2 = int(y_start + by2)
+
+        if best_cluster:
+            # Group tokens into lines based on vertical overlap to preserve true reading order
+            avg_token_h = max(10.0, sum(it["box"][3] - it["box"][1] for it in best_cluster) / len(best_cluster))
+            items_by_y = sorted(best_cluster, key=lambda it: it["box"][1])
+            lines = []
+            for it in items_by_y:
+                placed = False
+                for line in lines:
+                    line_mean_y = sum(m["box"][1] for m in line) / len(line)
+                    if abs(it["box"][1] - line_mean_y) < avg_token_h * 0.75:
+                        line.append(it)
+                        placed = True
+                        break
+                if not placed:
+                    lines.append([it])
+
+            # Sort tokens horizontally within each line
+            ordered_tokens = []
+            seen_tokens = set()
+            for line in lines:
+                line_sorted = sorted(line, key=lambda m: m["box"][0])
+                for tok in line_sorted:
+                    if tok["text"] not in seen_tokens:
+                        seen_tokens.add(tok["text"])
+                        ordered_tokens.append(tok["text"])
+
+            final_en = " ".join(ordered_tokens).strip()
+
+            # Calculate unified bounding box covering all clustered elements
+            all_bx1 = min(it["box"][0] for it in best_cluster)
+            all_by1 = min(it["box"][1] for it in best_cluster)
+            all_bx2 = max(it["box"][2] for it in best_cluster)
+            all_by2 = max(it["box"][3] for it in best_cluster)
+
+            # Map coordinates back from scaled OCR image space to vehicle_crop space
+            ux1 = all_bx1 / scale
+            uy1 = all_by1 / scale
+            ux2 = all_bx2 / scale
+            uy2 = all_by2 / scale
+
+            # Add generous outer padding to wrap the entire license plate border and badge
+            pw = max(10.0, ux2 - ux1)
+            ph = max(10.0, uy2 - uy1)
+            pad_x = max(12, int(pw * 0.20))
+            pad_y = max(10, int(ph * 0.25))
+
+            px1 = max(0, int(x_start + ux1 - pad_x))
+            py1 = max(0, int(y_start + uy1 - pad_y))
+            px2 = min(w, int(x_start + ux2 + pad_x))
+            py2 = min(h, int(y_start + uy2 + pad_y))
             coords = (px1, py1, px2, py2)
-        else:
-            # Fallback to highest confidence candidate if validation didn't match strictly
-            best_item = max(raw_detections, key=lambda x: x[2])
-            final_en = clean_to_ascii_alnum(best_item[1])
-            
-            has_digit = any(c.isdigit() for c in final_en)
-            is_valid_len = 3 <= len(final_en) <= 12
-            is_brand = final_en in {"ISUZU", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "FORD", "MEBUS", "ME BUS"}
-            if not has_digit or not is_valid_len or is_brand:
-                final_en = None
-            else:
-                pts = best_item[0]
-                xs = [pt[0] for pt in pts]
-                ys = [pt[1] for pt in pts]
-                bx1, by1 = min(xs), min(ys)
-                bx2, by2 = max(xs), max(ys)
-                px1 = int(x_start + bx1)
-                py1 = int(y_start + by1)
-                px2 = int(x_start + bx2)
-                py2 = int(y_start + by2)
-                coords = (px1, py1, px2, py2)
 
         if final_en:
-            print(f"  [OCR] Detected plate - EN: '{final_en}'")
+            print(f"  [OCR] Detected plate via {ocr_provider.upper()} (Engine {ocr_engine}) - EN: '{final_en}'")
         else:
-            print("  [OCR] No valid license plate detected (failed plate verification)")
+            print(f"  [OCR] No valid license plate detected via {ocr_provider.upper()} (Engine {ocr_engine})")
 
         return None, final_en, coords
 
@@ -274,31 +553,6 @@ async def handle_violation(
                 crop_filename = f"crop_cam{camera_id}_vid{vehicle_id}_{ts_str}.jpg"
             crop_path = str(SNAPSHOTS_DIR / crop_filename)
 
-        # Perform license plate extraction (OCR) BEFORE saving the images
-        plate_ar = None
-        plate_en = None
-        if not is_dms and crop is not None and crop.size > 0:
-            # pyrefly: ignore [bad-unpacking]
-            plate_ar, plate_en, plate_coords = await asyncio.to_thread(_extract_license_plate, crop)
-
-            # Draw the license plate overlay on both crop and full frame if detected
-            if plate_en and plate_coords:
-                px1, py1, px2, py2 = plate_coords
-                
-                # Draw on vehicle crop
-                cv.rectangle(crop, (px1, py1), (px2, py2), (0, 220, 60), 3)
-                cv.rectangle(crop, (px1, py1 - 22), (px1 + len(plate_en) * 11 + 10, py1), (0, 220, 60), cv.FILLED)
-                cv.putText(crop, plate_en, (px1 + 5, py1 - 6), cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
-                
-                # Draw on full frame (map coords using vehicle box start coordinates)
-                fx1 = x1c + px1
-                fy1 = y1c + py1
-                fx2 = x1c + px2
-                fy2 = y1c + py2
-                cv.rectangle(frame, (fx1, fy1), (fx2, fy2), (0, 220, 60), 3)
-                cv.rectangle(frame, (fx1, fy1 - 25), (fx1 + len(plate_en) * 14 + 10, fy1), (0, 220, 60), cv.FILLED)
-                cv.putText(frame, plate_en, (fx1 + 5, fy1 - 8), cv.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv.LINE_AA)
-
         # Offload file writing and image compression to local disk
         await asyncio.to_thread(_save_violation_images, snap_path, frame, crop_path, crop, quality)
 
@@ -317,6 +571,7 @@ async def handle_violation(
     else:
         resolved_event = event_type
 
+    # 1. Immediately insert event into database (lightning fast - no OCR delay)
     event_id = await db.insert_event(
         camera_id=camera_id,
         camera_name=camera_name,
@@ -329,13 +584,13 @@ async def handle_violation(
             "pedestrian_involved": pedestrian_involved,
             "timestamp": ts.isoformat(),
             "is_dms": is_dms,
-            "license_plate": plate_en,
-            "plate_ar": plate_ar,
+            "license_plate": None,
+            "plate_ar": None,
             "crossed_line_idx": crossed_line_idx,
         },
     )
 
-    # Publish violation to Redis Pub/Sub event bus
+    # 2. Immediately publish initial violation to Redis Pub/Sub so UI displays event in 0ms
     await redis_service.publish_violation({
         "id": event_id,
         "camera_id": camera_id,
@@ -344,10 +599,67 @@ async def handle_violation(
         "vehicle_id": vehicle_id if not is_dms else 0,
         "snapshot_path": filename,
         "crop_path": crop_filename,
-        "license_plate": plate_en,
+        "license_plate": None,
         "timestamp": ts.isoformat(),
         "pedestrian_involved": pedestrian_involved,
         "crossed_line_idx": crossed_line_idx,
     })
+
+    # 3. Asynchronously perform OCR in background so the pipeline and camera never stutter or lag
+    if not is_dms and crop is not None and crop.size > 0:
+        crop_copy = crop.copy()
+        frame_copy = frame.copy() if frame is not None else None
+        
+        async def _async_ocr_worker():
+            try:
+                # Run OCR extraction asynchronously in threadpool
+                _, plate_en, plate_coords = await asyncio.to_thread(_extract_license_plate, crop_copy)
+                if not plate_en:
+                    return
+
+                # Update database event with resolved plate
+                await db.update_event_license_plate(event_id, plate_en)
+
+                # Draw green bounding box & label onto crop and full frame snapshots
+                if plate_coords:
+                    px1, py1, px2, py2 = plate_coords
+                    cv.rectangle(crop_copy, (px1, py1), (px2, py2), (0, 220, 60), 3)
+                    cv.rectangle(crop_copy, (px1, py1 - 22), (px1 + len(plate_en) * 11 + 10, py1), (0, 220, 60), cv.FILLED)
+                    cv.putText(crop_copy, plate_en, (px1 + 5, py1 - 6), cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
+
+                    if frame_copy is not None:
+                        fx1 = x1c + px1
+                        fy1 = y1c + py1
+                        fx2 = x1c + px2
+                        fy2 = y1c + py2
+                        cv.rectangle(frame_copy, (fx1, fy1), (fx2, fy2), (0, 220, 60), 3)
+                        cv.rectangle(frame_copy, (fx1, fy1 - 25), (fx1 + len(plate_en) * 14 + 10, fy1), (0, 220, 60), cv.FILLED)
+                        cv.putText(frame_copy, plate_en, (fx1 + 5, fy1 - 8), cv.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv.LINE_AA)
+
+                    # Update saved images on disk with bounding box overlays
+                    await asyncio.to_thread(_save_violation_images, snap_path, frame_copy, crop_path, crop_copy, quality)
+
+                    # Update MinIO storage
+                    if filename and frame_copy is not None:
+                        ok_f, f_buf = cv.imencode(".jpg", frame_copy, [cv.IMWRITE_JPEG_QUALITY, quality])
+                        if ok_f:
+                            await minio_service.upload_snapshot_bytes(filename, f_buf.tobytes())
+                    if crop_filename and crop_copy is not None and crop_copy.size > 0:
+                        ok_c, c_buf = cv.imencode(".jpg", crop_copy, [cv.IMWRITE_JPEG_QUALITY, quality])
+                        if ok_c:
+                            await minio_service.upload_snapshot_bytes(crop_filename, c_buf.tobytes())
+
+                # Notify UI via WebSocket that license plate is resolved
+                from camera_manager import get_camera_manager
+                cm = get_camera_manager()
+                if cm:
+                    await cm.broadcast_plate_update(camera_id, event_id, plate_en)
+                    await cm.broadcast_ocr_toast(f"Plate '{plate_en}' identified via OCR.space", toast_type="success", title="OCR.space Active")
+
+            except Exception as ocr_err:
+                print(f"  [OCR Background] Error: {ocr_err}")
+
+        # Spawn background task immediately (non-blocking)
+        asyncio.create_task(_async_ocr_worker())
 
 

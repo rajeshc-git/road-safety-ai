@@ -161,6 +161,17 @@ export default function App() {
   const [streamKey, setStreamKey] = useState(Date.now())
   const [telemetry, setTelemetry] = useState({ attentionScore: 100.0, drowsinessLevel: 0.0, mode: 'traffic', fps: 25, width: 0, height: 0, active_violations: [] })
   const [eventTrigger, setEventTrigger] = useState(0)
+  const [ocrToast, setOcrToast] = useState(null)
+  const ocrToastTimerRef = useRef(null)
+
+  const showOcrToast = useCallback((toastData) => {
+    if (ocrToastTimerRef.current) clearTimeout(ocrToastTimerRef.current)
+    setOcrToast(toastData)
+    // Auto-hide latest toast after 4.5 seconds
+    ocrToastTimerRef.current = setTimeout(() => {
+      setOcrToast(null)
+    }, 4500)
+  }, [])
 
   const handleToggleSidebar = useCallback(() => {
     setSidebarCollapsed(prev => {
@@ -292,6 +303,18 @@ export default function App() {
               playDmsBeep(msg.event_type, curSettings.dms_beeper_type || 'default')
             }
           }
+        } else if (msg.type === 'plate_updated') {
+          // OCR completed asynchronously: update events list in place and refresh
+          setEventTrigger(prev => prev + 1)
+          loadEventsRef.current()
+        } else if (msg.type === 'ocr_toast') {
+          // Display OCR.space response or rate-limit toast in header left
+          showOcrToast({
+            title: msg.title || 'OCR.space',
+            message: msg.message,
+            toast_type: msg.toast_type || 'info',
+            timestamp: msg.timestamp || Date.now()
+          })
         }
       } catch (e) {
         console.error("DMS WS event error", e)
@@ -406,6 +429,8 @@ export default function App() {
         <TopBar
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={handleToggleSidebar}
+          ocrToast={ocrToast}
+          onDismissToast={() => setOcrToast(null)}
         />
         <PageComponent
           cameras={cameras}

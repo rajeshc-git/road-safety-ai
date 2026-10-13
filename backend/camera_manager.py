@@ -23,6 +23,12 @@ import redis_service
 import webrtc_service
 
 
+_global_camera_manager = None
+
+def get_camera_manager():
+    return _global_camera_manager
+
+
 class CameraManager:
     """
     Manages all active camera streams.
@@ -30,6 +36,8 @@ class CameraManager:
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
+        global _global_camera_manager
+        _global_camera_manager = self
         self.loop = loop
         self._streams: Dict[int, CameraStream] = {}
         self._ws_subscribers: Dict[int, Set[Any]] = {}  # camera_id → set of WebSocket connections
@@ -115,6 +123,41 @@ class CameraManager:
                 await ws.send_text(payload)
             except Exception:
                 pass
+
+    async def broadcast_plate_update(self, camera_id: int, event_id: int, license_plate: str, plate_ar: Optional[str] = None):
+        """Notify connected web UI clients that OCR has resolved plate number for an event."""
+        payload = json.dumps({
+            "type": "plate_updated",
+            "camera_id": camera_id,
+            "event_id": event_id,
+            "license_plate": license_plate,
+            "plate_ar": plate_ar,
+        })
+        # Broadcast to specific camera subscribers as well as all connected clients
+        target_ws = set(self._ws_subscribers.get(camera_id, set()))
+        for ws_set in self._ws_subscribers.values():
+            target_ws.update(ws_set)
+        for ws in target_ws:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                pass
+
+    async def broadcast_ocr_toast(self, message: str, toast_type: str = "success", title: str = "OCR.space"):
+        """Broadcast OCR notification/rate limit toast to header across all active clients."""
+        payload = json.dumps({
+            "type": "ocr_toast",
+            "toast_type": toast_type,  # 'success', 'warning', 'error', 'info'
+            "title": title,
+            "message": message,
+            "timestamp": time.time(),
+        })
+        for ws_set in self._ws_subscribers.values():
+            for ws in list(ws_set):
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    pass
 
     # ── WebSocket subscription ────────────────────────────────────────────────
     def subscribe(self, camera_id: int, ws):

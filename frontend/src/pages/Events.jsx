@@ -3,126 +3,69 @@ import { snapshotUrl, api } from '../api'
 import './Pages.css'
 
 /* ─────────────────────────── EVIDENCE IMAGE PREVIEW MODAL ─────────────────────────── */
-function SaudiPlate({ licensePlate, plateAr }) {
+function SaudiPlate({ licensePlate }) {
   if (!licensePlate) return null;
   
-  // Clean plate inputs (extract digits and letters)
-  const numbers = (licensePlate || '').match(/\d+/)?.[0] || '';
-  const letters = (licensePlate || '').replace(/\d+/g, '').replace(/[^a-zA-Z]/g, '').toUpperCase();
-  
-  // Translation maps (mapping English digits and characters to standard Saudi license symbols)
-  const digitsMap = {
-    '0': '٠', '1': '١', '2': '٢', '3': '٣', '4': '٤',
-    '5': '٥', '6': '٦', '7': '٧', '8': '٨', '9': '٩'
-  };
-  const lettersMap = {
-    'A': 'أ', 'B': 'ب', 'J': 'ح', 'D': 'د', 'R': 'ر',
-    'S': 'س', 'X': 'ص', 'T': 'ط', 'E': 'ع', 'G': 'ق',
-    'K': 'ك', 'L': 'ل', 'M': 'م', 'N': 'ن', 'H': 'هـ',
-    'V': 'و', 'Y': 'ى', 'Z': 'ز'
-  };
-  
-  // Translate English plate to Arabic dynamically if plateAr is not set
-  const translatedNum = numbers.split('').map(d => digitsMap[d] || d).join('');
-  const translatedLetters = letters.split('').map(l => lettersMap[l] || l).join(' ');
-  
-  let cleanPlateAr = plateAr;
-  if (!cleanPlateAr) {
-    cleanPlateAr = translatedLetters;
-  }
-  const cleanNumAr = translatedNum;
+  const raw = (licensePlate || '').trim().toUpperCase();
+  // Extract digits and letters
+  const numbers = raw.match(/\d+/g)?.join('') || '';
+  const letters = raw.replace(/\d+/g, '').replace(/[^A-Z]/g, '').trim();
+
+  // If both numbers and letters exist, display authentic two-tier plate (numbers on top, letters on bottom)
+  const hasSplit = numbers.length > 0 && letters.length > 0;
 
   return (
     <div style={{
-      width: '240px',
-      height: '80px',
-      background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 50%, #cbd5e1 100%)',
-      border: '4px solid #334155',
-      borderRadius: '8px',
-      boxShadow: '0 10px 25px rgba(0, 0, 0, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.6)',
+      width: '180px',
+      height: '74px',
+      background: 'linear-gradient(135deg, #ffffff 0%, #f1f5f9 60%, #e2e8f0 100%)',
+      border: '3.5px solid #1e293b',
+      borderRadius: '10px',
+      boxShadow: '0 8px 20px rgba(0, 0, 0, 0.25), inset 0 2px 4px rgba(255, 255, 255, 0.8)',
       display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
       position: 'relative',
       fontFamily: "'Inter', sans-serif",
       overflow: 'hidden',
-      userSelect: 'none'
+      userSelect: 'none',
+      padding: '4px 12px'
     }}>
-      {/* English Part (Left) */}
-      <div style={{
-        flex: '1.2',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRight: '3px solid #334155',
-        padding: '2px'
-      }}>
+      {hasSplit ? (
+        <>
+          <div style={{
+            fontSize: numbers.length > 5 ? '20px' : '26px',
+            fontWeight: '900',
+            letterSpacing: '2px',
+            color: '#0f172a',
+            lineHeight: '1.1'
+          }}>
+            {numbers}
+          </div>
+          <div style={{
+            fontSize: letters.length > 5 ? '12px' : '14px',
+            fontWeight: '800',
+            letterSpacing: '4px',
+            color: '#334155',
+            marginTop: '3px',
+            textTransform: 'uppercase'
+          }}>
+            {letters.split('').join(' ')}
+          </div>
+        </>
+      ) : (
         <div style={{
-          fontSize: '22px',
+          fontSize: raw.length > 8 ? '18px' : '24px',
           fontWeight: '900',
-          letterSpacing: '1px',
-          color: '#1e293b',
-          lineHeight: '1.1'
-        }}>
-          {numbers}
-        </div>
-        <div style={{
-          fontSize: '11px',
-          fontWeight: '800',
           letterSpacing: '2px',
-          color: '#475569',
-          marginTop: '4px',
-          textTransform: 'uppercase'
+          color: '#0f172a',
+          textAlign: 'center',
+          whiteSpace: 'nowrap'
         }}>
-          {letters.split('').join(' ')}
+          {raw}
         </div>
-      </div>
-      
-      {/* Vertical divider info (Middle) */}
-      <div style={{
-        width: '35px',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '6px 0',
-        borderRight: '3px solid #334155',
-        fontSize: '7px',
-        fontWeight: '900',
-        color: '#475569',
-        backgroundColor: '#f1f5f9'
-      }}>
-        <div style={{ transform: 'scale(0.95)' }}>KSA</div>
-        <div style={{ fontSize: '10px', color: '#1e293b', lineHeight: '1' }}>🇸🇦</div>
-        <div style={{ fontSize: '6px' }}>السعودية</div>
-      </div>
-      
-      {/* Arabic Part (Right) */}
-      <div style={{
-        flex: '1.2',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '2px'
-      }}>
-        <div style={{
-          fontSize: '24px',
-          fontWeight: '900',
-          color: '#1e293b',
-          lineHeight: '1.1'
-        }}>
-          {cleanNumAr}
-        </div>
-        <div style={{
-          fontSize: '13px',
-          fontWeight: '800',
-          color: '#475569',
-          marginTop: '2px',
-          direction: 'rtl'
-        }}>
-          {cleanPlateAr}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

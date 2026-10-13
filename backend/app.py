@@ -274,6 +274,45 @@ async def save_settings(data: dict):
     return {"status": "saved"}
 
 
+@app.get("/api/ocr/quota")
+async def get_ocr_quota():
+    """Queries OCR.space usage endpoint (https://myapi.ocr.space/conversions) to fetch monthly quota status."""
+    settings = await db.get_settings()
+    api_key = settings.get("ocr_space_api_key", "K89291931288957")
+    try:
+        import requests
+        resp = requests.post(
+            "https://myapi.ocr.space/conversions",
+            headers={"apikey": api_key},
+            timeout=6
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            total_used = data.get("count_total", 0)
+            monthly_limit = 25000
+            remaining = max(0, monthly_limit - total_used)
+            return {
+                "success": True,
+                "used_total": total_used,
+                "monthly_limit": monthly_limit,
+                "remaining": remaining,
+                "count_engine1": data.get("count_engine1", 0),
+                "count_engine2": data.get("count_engine2", 0),
+                "count_engine3": data.get("count_engine3", 0),
+            }
+        else:
+            return {
+                "success": False,
+                "status_code": resp.status_code,
+                "error": resp.text[:120]
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 # ── System Status ─────────────────────────────────────────────────────────────
 def _get_gpu_usage():
     try:

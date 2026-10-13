@@ -102,11 +102,71 @@ class TrackHistory:
         self.consecutive_still_frames: int = 0
         self._position_fresh: bool = False     # True only when update() recorded a genuinely new position
 
+        # Zone traversal metrics
+        self.zone_entry_pos: Optional[Tuple[float, float]] = None
+        self.zone_entry_time: float = 0.0
+        self.frames_in_zone: int = 0
+
+        # Best evidence snapshot buffering (guarantees unclipped vehicle & visible plate)
+        self.best_frame: Optional[np.ndarray] = None
+        self.best_box: Optional[Tuple[int, int, int, int]] = None
+        self.best_score: float = -1.0
+        self.last_seen_time: float = time.time()
+
+    def update_evidence(self, frame: np.ndarray, box: Tuple[int, int, int, int], in_zone: bool, is_near_zone: bool):
+        """Continuously evaluate and cache the clearest, unclipped snapshot of this vehicle for violation evidence.
+        
+        This prevents the common surveillance issue where a violation snapshot is taken at the moment of exit
+        when the vehicle's front bumper has already driven out of the bottom of the camera frame.
+        """
+        x1, y1, x2, y2 = box
+        img_h, img_w = frame.shape[:2]
+        w = max(0, x2 - x1)
+        h = max(0, y2 - y1)
+        if w < 40 or h < 40:
+            return
+
+        margin_left = max(0, x1)
+        margin_right = max(0, img_w - x2)
+        margin_top = max(0, y1)
+        margin_bottom = max(0, img_h - y2)
+
+        # Severe penalty if touching or clipped by frame borders.
+        # In downward-angled traffic cameras, front bumpers and plates are at the bottom of the vehicle box.
+        if margin_bottom < 15:
+            border_factor = 0.01  # bumper / license plate is chopped off at bottom
+        elif margin_bottom < 40:
+            border_factor = 0.18  # dangerously close to bottom border
+        elif margin_bottom < 70:
+            border_factor = 0.65
+        elif min(margin_left, margin_right, margin_top) < 15:
+            border_factor = 0.35  # clipped by side or top
+        else:
+            border_factor = 1.0   # 100% inside the camera frame
+
+        # Vehicle area: more pixels = higher OCR quality for license plate recognition
+        area = w * h
+        effective_area = min(area, img_w * img_h * 0.45)
+
+        score = effective_area * border_factor
+
+        # Boost priority when vehicle is in or directly adjacent to the stop zone
+        if in_zone:
+            score *= 2.5
+        elif is_near_zone:
+            score *= 1.4
+
+        if score > self.best_score:
+            self.best_score = score
+            self.best_frame = frame.copy()
+            self.best_box = (int(x1), int(y1), int(x2), int(y2))
+
     def update(self, cx: float, cy: float):
         self.positions.append((cx, cy))
         self.timestamps.append(time.time())
         self.frame_count += 1
         self._position_fresh = True  # Mark that a genuinely new position was recorded
+        self.last_seen_time = time.time()
 
     def frame_displacement(self) -> float:
         """Pixel displacement between the last two recorded positions."""
@@ -721,14 +781,22 @@ class CameraStream:
                                     box_ann.annotate(annotated, veh_dets)
                                     label_ann.annotate(annotated, veh_dets, labels)
 
-                                    # Overlay bright green highlight for compliant stopped vehicles
+                                    # Overlay status highlights: green for compliant stopped, red for violators
+                                    now_ts = time.time()
                                     for tid, box in zip(veh_dets.tracker_id, veh_dets.xyxy):
                                         hist = self.track_history.get(tid)
-                                        if hist and getattr(hist, "has_stopped", False):
-                                            x1, y1, x2, y2 = map(int, box)
+                                        if not hist:
+                                            continue
+                                        x1, y1, x2, y2 = map(int, box)
+                                        if getattr(hist, "has_stopped", False):
                                             cv.rectangle(annotated, (x1, y1), (x2, y2), (0, 220, 60), 3)
-                                            cv.rectangle(annotated, (x1, y1 - 25), (x1 + 175, y1), (0, 220, 60), cv.FILLED)
-                                            cv.putText(annotated, "STOPPED (COMPLIANT)", (x1 + 5, y1 - 8),
+                                            cv.rectangle(annotated, (x1, max(0, y1 - 25)), (x1 + 175, max(0, y1)), (0, 220, 60), cv.FILLED)
+                                            cv.putText(annotated, "STOPPED (COMPLIANT)", (x1 + 5, max(12, y1 - 8)),
+                                                       cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
+                                        elif getattr(hist, "violation_reported", False) and (now_ts - getattr(hist, "last_violation_time", 0.0) < 3.0):
+                                            cv.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                                            cv.rectangle(annotated, (x1, max(0, y1 - 25)), (x1 + 205, max(0, y1)), (0, 0, 255), cv.FILLED)
+                                            cv.putText(annotated, "VIOLATION: DID NOT STOP", (x1 + 5, max(12, y1 - 8)),
                                                        cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2, cv.LINE_AA)
 
                                 if len(ped_dets) > 0:
@@ -801,29 +869,63 @@ class CameraStream:
                 except Exception:
                     pass
 
-    def _check_violations(self, raw_frame, annotated, veh_dets, ped_dets):
-        """Zone-based stop compliance check.
-        
-        The correct logic (per Roboflow / industry research):
-        1. When a vehicle ENTERS the drawn zone → start monitoring displacement.
-        2. While INSIDE the zone, count consecutive frames where the car barely
-           moved (displacement < STOP_DISPLACEMENT_PX). If it stays still for
-           STOP_CONFIRM_FRAMES in a row → has_stopped = True.
-        3. When the vehicle EXITS the zone (leaves the polygon):
-           - If has_stopped is True → compliant, no violation.
-           - If has_stopped is False → violation ("Did Not Stop").
-        
-        This replaces the old speed-threshold approach which was unreliable
-        because tracker bounding-box jitter causes non-zero speed even for
-        parked cars.
-        """
+    def _trigger_vehicle_violation(
+        self, tid: int, raw_frame: np.ndarray, annotated: np.ndarray,
+        current_box, zone_idx: int, ped_near_any_line: bool, reason: str = "Did Not Stop"
+    ):
+        """Unified violation trigger that always dispatches the best unclipped evidence snapshot."""
         from config import VIOLATION_COOLDOWN_SEC
+        hist = self.track_history[tid]
+        now = time.time()
+        if (hist.frame_count >= MIN_TRACKED_FRAMES
+                and not hist.violation_reported
+                and (now - hist.last_violation_time >= VIOLATION_COOLDOWN_SEC)):
+            hist.violation_reported = True
+            hist.last_violation_time = now
+
+            # Select the absolute best evidence frame where vehicle was fully in view and plate is clearest
+            if hist.best_frame is not None and hist.best_box is not None:
+                evidence_frame = hist.best_frame.copy()
+                evidence_box = hist.best_box
+            else:
+                evidence_frame = raw_frame.copy()
+                evidence_box = tuple(map(int, current_box))
+
+            # Visual feedback on live video stream: draw prominent red violation indicator
+            x1, y1, x2, y2 = map(int, current_box)
+            cv.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv.rectangle(annotated, (x1, max(0, y1 - 26)), (x1 + 185, max(0, y1)), (0, 0, 255), cv.FILLED)
+            cv.putText(annotated, "VIOLATION!", (x1 + 6, max(12, y1 - 7)),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv.LINE_AA)
+
+            self.on_violation(
+                self.camera_id, self.camera_name,
+                int(tid), evidence_frame,
+                evidence_box, ped_near_any_line,
+                reason, zone_idx,
+            )
+
+    def _check_violations(self, raw_frame, annotated, veh_dets, ped_dets):
+        """Zone-based stop compliance check with early detection and evidence buffering.
+        
+        1. When vehicle ENTERS the drawn zone -> start monitoring displacement and track zone entry.
+        2. While INSIDE the zone:
+           - If it stays still for STOP_CONFIRM_FRAMES -> has_stopped = True (compliant).
+           - Continuous evidence caching: stores the highest-resolution, unclipped frame
+             before the car gets close to the bottom border where the license plate would be cut off.
+           - Early violation triggers (before vehicle drives out of frame):
+             a) Stop line crossing (trajectory crosses stop line segment without stopping)
+             b) Zone traversal (moved across >=40% of zone span at driving speed with 0 stop frames)
+             c) Screen border safety trigger (vehicle approaches bottom border while in zone without stopping)
+        3. When vehicle EXITS the zone:
+           - If has_stopped is True -> compliant, no violation.
+           - If has_stopped is False -> violation ("Did Not Stop").
+        """
         all_zones = self.stop_zones
         if not all_zones:
             return
 
         # Read stop duration from UI settings (default 0.6s) and convert to inference-frame count
-        # At ~8 inference updates/sec (24fps ÷ 3), 0.6s ≈ 5 inference frames
         stop_duration_sec = float(get_runtime_settings().get("stop_duration", "0.6"))
         inferences_per_sec = max(1, self.target_fps / 3.0)
         stop_confirm_frames = max(2, round(stop_duration_sec * inferences_per_sec))
@@ -848,12 +950,16 @@ class CameraStream:
                     break
 
         now = time.time()
+        img_h, img_w = raw_frame.shape[:2]
+
         for tid, bottom_center, box in zip(
             veh_dets.tracker_id,
             veh_dets.get_anchors_coordinates(sv.Position.BOTTOM_CENTER),
             veh_dets.xyxy,
         ):
             bx, by = float(bottom_center[0]), float(bottom_center[1])
+            x1, y1, x2, y2 = map(float, box)
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
             hist = self.track_history[tid]
 
             if len(hist.positions) < 2:
@@ -865,7 +971,16 @@ class CameraStream:
                 if len(zone) != 4:
                     continue
 
-                in_zone = self._point_in_polygon(bx, by, zone)
+                in_zone = (self._point_in_polygon(bx, by, zone) or
+                           self._point_in_polygon(cx, cy, zone))
+
+                # Proximity check for evidence snapshot scoring
+                is_near = (in_zone or 
+                           self._point_near_line(bx, by, zone[0]["x"], zone[0]["y"], zone[1]["x"], zone[1]["y"], 80) or
+                           self._point_near_line(bx, by, zone[2]["x"], zone[2]["y"], zone[3]["x"], zone[3]["y"], 80))
+
+                # Continuously evaluate and cache the best evidence frame (unclipped vehicle, visible plate)
+                hist.update_evidence(raw_frame, (int(x1), int(y1), int(x2), int(y2)), in_zone, is_near)
 
                 if in_zone:
                     currently_in_any_zone = True
@@ -878,9 +993,13 @@ class CameraStream:
                         hist.has_stopped = False
                         hist.violation_reported = False   # Reset so this zone can be evaluated fresh
                         hist.consecutive_still_frames = 0
+                        hist.zone_entry_pos = (bx, by)
+                        hist.zone_entry_time = now
+                        hist.frames_in_zone = 0
+
+                    hist.frames_in_zone += 1
 
                     # Check frame-to-frame displacement — ONLY on frames with fresh position data
-                    # (On cached/non-inference frames, displacement is artificially 0 since the bbox is reused)
                     if hist._position_fresh:
                         hist._position_fresh = False
                         disp = hist.frame_displacement()
@@ -889,59 +1008,61 @@ class CameraStream:
                         else:
                             hist.consecutive_still_frames = 0
 
-                    # If the car stayed still long enough → it stopped
+                    # If the car stayed still long enough → confirmed compliant stop
                     if hist.consecutive_still_frames >= stop_confirm_frames:
                         hist.has_stopped = True
                         hist.zones_stopped.add(zone_idx)
 
+                    # ── EARLY VIOLATION TRIGGERS (catch violators BEFORE they leave the frame) ──
+                    if zone_idx not in hist.zones_stopped and not hist.has_stopped:
+                        p1_x, p1_y = zone[0]["x"], zone[0]["y"]
+                        p2_x, p2_y = zone[1]["x"], zone[1]["y"]
+                        p3_x, p3_y = zone[2]["x"], zone[2]["y"]
+                        p4_x, p4_y = zone[3]["x"], zone[3]["y"]
+
+                        # Check 1: Stop line crossing (trajectory intersects line P1-P2 or P3-P4)
+                        p_prev = hist.positions[-2]
+                        p_curr = hist.positions[-1]
+                        crossed_stop_line = (
+                            self._line_intersection((p_prev[0], p_prev[1]), (p_curr[0], p_curr[1]), (p1_x, p1_y), (p2_x, p2_y)) or
+                            self._line_intersection((p_prev[0], p_prev[1]), (p_curr[0], p_curr[1]), (p3_x, p3_y), (p4_x, p4_y))
+                        )
+
+                        # Check 2: Zone traversal at continuous driving speed without stopping
+                        entry_pos = hist.zone_entry_pos or (bx, by)
+                        dist_moved = ((bx - entry_pos[0]) ** 2 + (by - entry_pos[1]) ** 2) ** 0.5
+                        zone_span = max(abs(p2_x - p1_x), abs(p3_y - p1_y), abs(p4_y - p2_y), 100.0)
+                        traversed_zone = (dist_moved >= 0.40 * zone_span and 
+                                          hist.frames_in_zone >= 3 and 
+                                          hist.consecutive_still_frames == 0)
+
+                        # Check 3: Screen border safety trigger (vehicle front is approaching bottom of camera)
+                        approaching_screen_edge = (y2 >= img_h - 65 or by >= img_h - 55)
+
+                        if crossed_stop_line or traversed_zone or approaching_screen_edge:
+                            self._trigger_vehicle_violation(
+                                tid, raw_frame, annotated, box, zone_idx, ped_near_any_line
+                            )
+
                 elif hist.in_zone and hist.in_zone_idx == zone_idx and not in_zone:
                     # ── Vehicle just EXITED this specific zone ──
+                    if zone_idx not in hist.zones_stopped and not hist.has_stopped:
+                        self._trigger_vehicle_violation(
+                            tid, raw_frame, annotated, box, zone_idx, ped_near_any_line
+                        )
                     hist.in_zone = False
                     hist.in_zone_idx = -1
-
-                    if zone_idx not in hist.zones_stopped:
-                        # Car drove through the zone without stopping → VIOLATION
-                        if (hist.frame_count >= MIN_TRACKED_FRAMES
-                                and not hist.violation_reported
-                                and (now - hist.last_violation_time >= VIOLATION_COOLDOWN_SEC)):
-                            hist.violation_reported = True
-                            hist.last_violation_time = now
-                            cv.rectangle(annotated,
-                                         (int(box[0]), int(box[1])), (int(box[2]), int(box[3])),
-                                         (0, 0, 255), 3)
-                            cv.putText(annotated, "VIOLATION!", (int(box[0]), int(box[1]) - 10),
-                                       cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                            self.on_violation(
-                                self.camera_id, self.camera_name,
-                                int(tid), raw_frame.copy(),
-                                tuple(map(int, box)), ped_near_any_line,
-                                "Did Not Stop", zone_idx,
-                            )
-                    # Reset displacement counter (do NOT break — continue checking other zones)
                     hist.consecutive_still_frames = 0
 
-            # If the vehicle is not in any zone anymore, make sure in_zone is cleared
+            # If the vehicle is not in any zone anymore, make sure in_zone is cleared and evaluated
             if not currently_in_any_zone and hist.in_zone:
                 prev_zone_idx = hist.in_zone_idx
+                if prev_zone_idx not in hist.zones_stopped and not hist.has_stopped:
+                    self._trigger_vehicle_violation(
+                        tid, raw_frame, annotated, box, max(0, prev_zone_idx), ped_near_any_line
+                    )
                 hist.in_zone = False
                 hist.in_zone_idx = -1
-                if prev_zone_idx not in hist.zones_stopped:
-                    if (hist.frame_count >= MIN_TRACKED_FRAMES
-                            and not hist.violation_reported
-                            and (now - hist.last_violation_time >= VIOLATION_COOLDOWN_SEC)):
-                        hist.violation_reported = True
-                        hist.last_violation_time = now
-                        cv.rectangle(annotated,
-                                     (int(box[0]), int(box[1])), (int(box[2]), int(box[3])),
-                                     (0, 0, 255), 3)
-                        cv.putText(annotated, "VIOLATION!", (int(box[0]), int(box[1]) - 10),
-                                   cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                        self.on_violation(
-                            self.camera_id, self.camera_name,
-                            int(tid), raw_frame.copy(),
-                            tuple(map(int, box)), ped_near_any_line,
-                            "Did Not Stop", max(0, prev_zone_idx),
-                        )
                 hist.consecutive_still_frames = 0
 
     def _line_intersection(self, p1, q1, p2, q2) -> bool:

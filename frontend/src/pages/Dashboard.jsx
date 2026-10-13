@@ -369,6 +369,9 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
     dms_phone_distraction_threshold: initSettings?.dms_phone_distraction_threshold || '1.0',
     dms_look_away_threshold: initSettings?.dms_look_away_threshold || '3.0',
     dms_alert_beep: initSettings?.dms_alert_beep || 'true',
+    ocr_provider: initSettings?.ocr_provider || 'ocr_space',
+    ocr_space_api_key: initSettings?.ocr_space_api_key || 'K89291931288957',
+    ocr_engine: initSettings?.ocr_engine || '2',
   })
 
   const [saved, setSaved] = useState(false)
@@ -423,6 +426,32 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
           <Slider label="Drowsiness Yawn Trigger" value={vals.dms_yawn_threshold || '2.0'} min={0.5} max={5.0} step={0.1} unit="seconds" onChange={sl('dms_yawn_threshold')} desc="Time mouth must be open continuously to trigger yawn warning" />
           <Slider label="Look Away Trigger" value={vals.dms_look_away_threshold || '3.0'} min={0.5} max={10.0} step={0.5} unit="seconds" onChange={sl('dms_look_away_threshold')} desc="Time driver is not looking at the road continuously to trigger warning" />
           <Slider label="Phone Distraction Trigger" value={vals.dms_phone_distraction_threshold || '1.0'} min={0.2} max={5.0} step={0.1} unit="seconds" onChange={sl('dms_phone_distraction_threshold')} desc="Time driver is holding a phone continuously to trigger warning" />
+
+          <div className="s-group-title" style={{ marginTop: 15 }}>License Plate OCR (OCR.space API)</div>
+          <div className="s-option"><span>OCR Service</span>
+            <select className="f-sel" value={vals.ocr_provider || 'ocr_space'} onChange={sl('ocr_provider')}>
+              <option value="ocr_space">OCR.space Cloud API</option>
+              <option value="local">Local Engine (EasyOCR / PaddleOCR)</option>
+            </select>
+          </div>
+          <div className="s-option"><span>OCR.space Engine</span>
+            <select className="f-sel" value={vals.ocr_engine || '2'} onChange={sl('ocr_engine')}>
+              <option value="1">Engine 1 (Fast / Legacy)</option>
+              <option value="2">Engine 2 (Recommended - Optimal for Plates & Digits)</option>
+              <option value="3">Engine 3 (AI / LLM-Powered High Precision)</option>
+            </select>
+          </div>
+          <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
+            <span>OCR.space API Key</span>
+            <input
+              type="text"
+              className="f-input"
+              value={vals.ocr_space_api_key || 'K89291931288957'}
+              onChange={sl('ocr_space_api_key')}
+              placeholder="Enter OCR.space API Key"
+              style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
+            />
+          </div>
         </>}
         {tab === 'storage' && <>
           <div className="s-group-title">Storage Settings</div>
@@ -1387,11 +1416,12 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
   }
 
   // Re-draw all lines on the live canvas whenever `zones`, `isDrawingZone`, or `drawnPoints` changes
+  // Also re-draw when stream resumes after pause/play (imgLoaded + streamKey change triggers fresh canvas repaint)
   useEffect(() => {
     const cv = liveCanvasRef.current; if (!cv || isDms) return
     const ctx = cv.getContext('2d')
     drawLiveLines(ctx, cv, zones, null, drawnPoints, mousePos)
-  }, [zones, isDms, isDrawingZone, drawnPoints, mousePos, drawLiveLines])
+  }, [zones, isDms, isDrawingZone, drawnPoints, mousePos, drawLiveLines, imgLoaded, streamKey])
 
   const handleFullscreen = () => {
     const el = document.querySelector('.live-wrap')
@@ -1722,126 +1752,69 @@ function LiveView({ cameras, activeCam, onCamSwitch, telemetry, streamKey, lines
 
 
 /* ─────────────────────────── EVIDENCE IMAGE PREVIEW MODAL ─────────────────────────── */
-function SaudiPlate({ licensePlate, plateAr }) {
+function SaudiPlate({ licensePlate }) {
   if (!licensePlate) return null;
   
-  // Clean plate inputs (extract digits and letters)
-  const numbers = (licensePlate || '').match(/\d+/)?.[0] || '';
-  const letters = (licensePlate || '').replace(/\d+/g, '').replace(/[^a-zA-Z]/g, '').toUpperCase();
-  
-  // Translation maps (mapping English digits and characters to standard Saudi license symbols)
-  const digitsMap = {
-    '0': '٠', '1': '١', '2': '٢', '3': '٣', '4': '٤',
-    '5': '٥', '6': '٦', '7': '٧', '8': '٨', '9': '٩'
-  };
-  const lettersMap = {
-    'A': 'أ', 'B': 'ب', 'J': 'ح', 'D': 'د', 'R': 'ر',
-    'S': 'س', 'X': 'ص', 'T': 'ط', 'E': 'ع', 'G': 'ق',
-    'K': 'ك', 'L': 'ل', 'M': 'م', 'N': 'ن', 'H': 'هـ',
-    'V': 'و', 'Y': 'ى', 'Z': 'ز'
-  };
-  
-  // Translate English plate to Arabic dynamically if plateAr is not set
-  const translatedNum = numbers.split('').map(d => digitsMap[d] || d).join('');
-  const translatedLetters = letters.split('').map(l => lettersMap[l] || l).join(' ');
-  
-  let cleanPlateAr = plateAr;
-  if (!cleanPlateAr) {
-    cleanPlateAr = translatedLetters;
-  }
-  const cleanNumAr = translatedNum;
+  const raw = (licensePlate || '').trim().toUpperCase();
+  // Extract digits and letters
+  const numbers = raw.match(/\d+/g)?.join('') || '';
+  const letters = raw.replace(/\d+/g, '').replace(/[^A-Z]/g, '').trim();
+
+  // If both numbers and letters exist, display authentic two-tier plate (numbers on top, letters on bottom)
+  const hasSplit = numbers.length > 0 && letters.length > 0;
 
   return (
     <div style={{
-      width: '240px',
-      height: '80px',
-      background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 50%, #cbd5e1 100%)',
-      border: '4px solid #334155',
-      borderRadius: '8px',
-      boxShadow: '0 10px 25px rgba(0, 0, 0, 0.4), inset 0 2px 4px rgba(255, 255, 255, 0.6)',
+      width: '180px',
+      height: '74px',
+      background: 'linear-gradient(135deg, #ffffff 0%, #f1f5f9 60%, #e2e8f0 100%)',
+      border: '3.5px solid #1e293b',
+      borderRadius: '10px',
+      boxShadow: '0 8px 20px rgba(0, 0, 0, 0.25), inset 0 2px 4px rgba(255, 255, 255, 0.8)',
       display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
       position: 'relative',
       fontFamily: "'Inter', sans-serif",
       overflow: 'hidden',
-      userSelect: 'none'
+      userSelect: 'none',
+      padding: '4px 12px'
     }}>
-      {/* English Part (Left) */}
-      <div style={{
-        flex: '1.2',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRight: '3px solid #334155',
-        padding: '2px'
-      }}>
+      {hasSplit ? (
+        <>
+          <div style={{
+            fontSize: numbers.length > 5 ? '20px' : '26px',
+            fontWeight: '900',
+            letterSpacing: '2px',
+            color: '#0f172a',
+            lineHeight: '1.1'
+          }}>
+            {numbers}
+          </div>
+          <div style={{
+            fontSize: letters.length > 5 ? '12px' : '14px',
+            fontWeight: '800',
+            letterSpacing: '4px',
+            color: '#334155',
+            marginTop: '3px',
+            textTransform: 'uppercase'
+          }}>
+            {letters.split('').join(' ')}
+          </div>
+        </>
+      ) : (
         <div style={{
-          fontSize: '22px',
+          fontSize: raw.length > 8 ? '18px' : '24px',
           fontWeight: '900',
-          letterSpacing: '1px',
-          color: '#1e293b',
-          lineHeight: '1.1'
-        }}>
-          {numbers}
-        </div>
-        <div style={{
-          fontSize: '11px',
-          fontWeight: '800',
           letterSpacing: '2px',
-          color: '#475569',
-          marginTop: '4px',
-          textTransform: 'uppercase'
+          color: '#0f172a',
+          textAlign: 'center',
+          whiteSpace: 'nowrap'
         }}>
-          {letters.split('').join(' ')}
+          {raw}
         </div>
-      </div>
-      
-      {/* Vertical divider info (Middle) */}
-      <div style={{
-        width: '35px',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '6px 0',
-        borderRight: '3px solid #334155',
-        fontSize: '7px',
-        fontWeight: '900',
-        color: '#475569',
-        backgroundColor: '#f1f5f9'
-      }}>
-        <div style={{ transform: 'scale(0.95)' }}>KSA</div>
-        <div style={{ fontSize: '10px', color: '#1e293b', lineHeight: '1' }}>🇸🇦</div>
-        <div style={{ fontSize: '6px' }}>السعودية</div>
-      </div>
-      
-      {/* Arabic Part (Right) */}
-      <div style={{
-        flex: '1.2',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '2px'
-      }}>
-        <div style={{
-          fontSize: '24px',
-          fontWeight: '900',
-          color: '#1e293b',
-          lineHeight: '1.1'
-        }}>
-          {cleanNumAr}
-        </div>
-        <div style={{
-          fontSize: '13px',
-          fontWeight: '800',
-          color: '#475569',
-          marginTop: '2px',
-          direction: 'rtl'
-        }}>
-          {cleanPlateAr}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -17,8 +17,31 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
     dms_phone_distraction_threshold: '1.0',
     dms_look_away_threshold: '3.0',
     dms_alert_beep: 'true',
+    ocr_provider: 'ocr_space',
+    ocr_space_api_key: 'K89291931288957',
+    ocr_engine: '2',
   })
   const [saved, setSaved] = useState(false)
+  const [quotaInfo, setQuotaInfo] = useState(null)
+  const [loadingQuota, setLoadingQuota] = useState(false)
+
+  const checkOcrQuota = async () => {
+    setLoadingQuota(true)
+    try {
+      const data = await api.get('/api/ocr/quota')
+      setQuotaInfo(data)
+    } catch (e) {
+      setQuotaInfo({ success: false, error: String(e) })
+    } finally {
+      setLoadingQuota(false)
+    }
+  }
+
+  useEffect(() => {
+    if (tab === 'detection') {
+      checkOcrQuota()
+    }
+  }, [tab])
 
   useEffect(() => { if (initSettings && Object.keys(initSettings).length) setVals(v=>({...v,...initSettings})) }, [initSettings])
 
@@ -86,7 +109,90 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
                 <SettingSlider label="Drowsiness Eye-Close Trigger" value={vals.dms_eye_close_threshold || '1.5'} min={0.2} max={5.0} step={0.1} unit="seconds" onChange={sl('dms_eye_close_threshold')} desc="Time driver's eyes must be closed continuously to trigger sleep warning"/>
                 <SettingSlider label="Drowsiness Yawn Trigger" value={vals.dms_yawn_threshold || '2.0'} min={0.5} max={5.0} step={0.1} unit="seconds" onChange={sl('dms_yawn_threshold')} desc="Time driver's mouth must be open continuously to trigger yawn warning"/>
                 <SettingSlider label="Look Away Trigger" value={vals.dms_look_away_threshold || '3.0'} min={0.5} max={10.0} step={0.5} unit="seconds" onChange={sl('dms_look_away_threshold')} desc="Time driver is not looking at the road continuously to trigger look away warning"/>
-                <SettingSlider label="Phone Distraction Trigger" value={vals.dms_phone_distraction_threshold || '1.0'} min={0.2} max={5.0} step={0.1} unit="seconds" onChange={sl('dms_phone_distraction_threshold')} desc="Time driver is holding a phone continuously to trigger phone warning"/>
+                <div className="settings-section-title" style={{marginTop:20}}>License Plate OCR (OCR.space API)</div>
+                <SettingRow label="OCR Service">
+                  <select className="f-sel" value={vals.ocr_provider || 'ocr_space'} onChange={sl('ocr_provider')}>
+                    <option value="ocr_space">OCR.space Cloud API</option>
+                    <option value="local">Local Engine (EasyOCR / PaddleOCR)</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="OCR.space Engine">
+                  <select className="f-sel" value={vals.ocr_engine || '2'} onChange={sl('ocr_engine')}>
+                    <option value="1">Engine 1 (Fast / Legacy)</option>
+                    <option value="2">Engine 2 (Recommended - Optimal for Plates & Digits)</option>
+                    <option value="3">Engine 3 (AI / LLM-Powered High Precision)</option>
+                  </select>
+                </SettingRow>
+                <SettingRow label="OCR.space API Key">
+                  <input
+                    type="text"
+                    className="f-input"
+                    value={vals.ocr_space_api_key || 'K89291931288957'}
+                    onChange={sl('ocr_space_api_key')}
+                    placeholder="Enter OCR.space API Key"
+                    style={{width:'100%',padding:'6px 10px',borderRadius:'6px',border:'1px solid var(--border)',background:'var(--bg-card)',color:'var(--text)'}}
+                  />
+                </SettingRow>
+
+                {/* Live Quota & Usage Monitor */}
+                <div style={{
+                  marginTop: '14px',
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid var(--border)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px'
+                }}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'11.5px',fontWeight:'700',color:'var(--t1)'}}>
+                      <i className="fa-solid fa-chart-pie" style={{color:'#38bdf8'}}/>
+                      <span>OCR.space Monthly Quota Tracker</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={checkOcrQuota}
+                      disabled={loadingQuota}
+                      className="btn-secondary"
+                      style={{padding:'3px 8px',fontSize:'10px',borderRadius:'4px'}}
+                    >
+                      <i className={`fa-solid fa-arrows-rotate ${loadingQuota ? 'fa-spin' : ''}`}/> Refresh Quota
+                    </button>
+                  </div>
+
+                  {quotaInfo && quotaInfo.success ? (
+                    <div>
+                      <div style={{display:'flex',justifyContent:'space-between',fontSize:'11px',marginBottom:'5px'}}>
+                        <span style={{color:'var(--t2)'}}>Free Tier Limit: <b>25,000 / month</b></span>
+                        <span style={{color:'#10b981',fontWeight:'700'}}>
+                          {quotaInfo.remaining?.toLocaleString()} Remaining ({quotaInfo.used_total?.toLocaleString()} used)
+                        </span>
+                      </div>
+                      <div style={{width:'100%',height:'6px',background:'rgba(255,255,255,0.08)',borderRadius:'3px',overflow:'hidden'}}>
+                        <div style={{
+                          width: `${Math.min(100, Math.max(1, (quotaInfo.used_total / 25000) * 100))}%`,
+                          height: '100%',
+                          background: 'linear-gradient(90deg, #38bdf8, #10b981)'
+                        }}/>
+                      </div>
+                      <div style={{display:'flex',gap:'12px',fontSize:'9.5px',color:'var(--t3)',marginTop:'6px'}}>
+                        <span>Engine 1: <b>{quotaInfo.count_engine1 || 0}</b></span>
+                        <span>Engine 2: <b>{quotaInfo.count_engine2 || 0}</b></span>
+                        <span>Engine 3: <b>{quotaInfo.count_engine3 || 0}</b></span>
+                      </div>
+                      <div style={{fontSize:'9px',color:'var(--t3)',marginTop:'6px',fontStyle:'italic'}}>
+                        * Direct response from <code>https://myapi.ocr.space/conversions</code>. Per OCR.space documentation, remote conversion counters update once daily (or remain 0 on non-PRO keys).
+                      </div>
+                    </div>
+                  ) : quotaInfo && !quotaInfo.success ? (
+                    <div style={{fontSize:'10.5px',color:'#f87171'}}>
+                      <i className="fa-solid fa-triangle-exclamation"/> Unable to fetch remote quota: {quotaInfo.error || quotaInfo.status_code}
+                    </div>
+                  ) : (
+                    <div style={{fontSize:'10px',color:'var(--t3)'}}>Checking live remaining quota with OCR.space...</div>
+                  )}
+                </div>
               </div>
             </>}
             {tab==='storage' && <>

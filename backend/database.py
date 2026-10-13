@@ -66,6 +66,9 @@ DEFAULT_SETTINGS = {
     "dms_phone_distraction_threshold": "1.0",
     "dms_look_away_threshold": "3.0",
     "dms_alert_beep": "true",
+    "ocr_provider": "ocr_space",
+    "ocr_space_api_key": "K89291931288957",
+    "ocr_engine": "2",
 }
 
 
@@ -303,6 +306,22 @@ async def get_event_stats() -> Dict:
 async def update_event_status(event_id: int, status: str):
     async with get_db() as db:
         await db.execute("UPDATE events SET status=? WHERE id=?", (status, event_id))
+        await db.commit()
+
+
+async def update_event_license_plate(event_id: int, plate_en: str, plate_ar: Optional[str] = None):
+    """Update event metadata with license plate when OCR finishes asynchronously."""
+    async with get_db() as db:
+        async with db.execute("SELECT metadata_json FROM events WHERE id=?", (event_id,)) as cur:
+            row = await cur.fetchone()
+        metadata = json.loads(row[0]) if row and row[0] else {}
+        metadata["license_plate"] = plate_en
+        if plate_ar:
+            metadata["plate_ar"] = plate_ar
+        await db.execute(
+            "UPDATE events SET metadata_json=? WHERE id=?",
+            (json.dumps(metadata), event_id)
+        )
         await db.commit()
 
 
