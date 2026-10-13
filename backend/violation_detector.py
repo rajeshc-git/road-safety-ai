@@ -384,19 +384,19 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
         ocr_engine = settings.get("ocr_engine", "2")
         ocr_api_key = settings.get("ocr_space_api_key", "K89291931288957")
         local_backend = settings.get("local_ocr_backend", "easyocr")
-        gemma4_endpoint = settings.get("gemma4_endpoint", "http://host.docker.internal:11434")
-        gemma4_model = settings.get("gemma4_model", "gemma4:e2b")
+        ai_runner_endpoint = settings.get("ai_runner_endpoint") or settings.get("gemma4_endpoint") or "http://host.docker.internal:11434"
+        ai_runner_model = settings.get("ai_runner_model") or settings.get("gemma4_model") or "gemma4:e2b"
 
-        # Gemma 4 Local Vision AI mode
-        if ocr_provider == "gemma4":
-            gemma_plate = _call_gemma4_vision(lower_portion, endpoint=gemma4_endpoint, model=gemma4_model)
-            if not gemma_plate and h >= 80:
+        # Docker AI Model Runner Vision mode
+        if ocr_provider in ("docker_ai", "gemma4"):
+            ai_plate = _call_gemma4_vision(lower_portion, endpoint=ai_runner_endpoint, model=ai_runner_model)
+            if not ai_plate and h >= 80:
                 wider_crop = vehicle_crop[int(h * 0.25):int(h * 1.0), 0:w]
                 if wider_crop.size > 0:
-                    gemma_plate = _call_gemma4_vision(wider_crop, endpoint=gemma4_endpoint, model=gemma4_model)
-            if gemma_plate:
+                    ai_plate = _call_gemma4_vision(wider_crop, endpoint=ai_runner_endpoint, model=ai_runner_model)
+            if ai_plate:
                 coords = (int(w * 0.15), int(h * 0.55), int(w * 0.85), int(h * 0.95))
-                return None, gemma_plate, coords
+                return None, ai_plate, coords
             return None, None, None
 
         # Resolution boost: upscale small plate regions to >=220px height for crisp edge clarity

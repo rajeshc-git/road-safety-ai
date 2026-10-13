@@ -390,11 +390,34 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
     ocr_space_api_key: initSettings?.ocr_space_api_key || 'K89291931288957',
     ocr_engine: initSettings?.ocr_engine || '2',
     local_ocr_backend: initSettings?.local_ocr_backend || 'easyocr',
-    gemma4_endpoint: initSettings?.gemma4_endpoint || 'http://host.docker.internal:11434',
-    gemma4_model: initSettings?.gemma4_model || 'gemma4:e2b',
+    ai_runner_endpoint: initSettings?.ai_runner_endpoint || initSettings?.gemma4_endpoint || 'http://host.docker.internal:11434',
+    ai_runner_model: initSettings?.ai_runner_model || initSettings?.gemma4_model || 'gemma4:e2b',
   })
 
   const [saved, setSaved] = useState(false)
+  const [availableAiModels, setAvailableAiModels] = useState([])
+  const [loadingAiModels, setLoadingAiModels] = useState(false)
+
+  const loadAiModels = async () => {
+    setLoadingAiModels(true)
+    try {
+      const res = await api.get('/api/ai-models')
+      if (res && res.success && Array.isArray(res.models)) {
+        setAvailableAiModels(res.models)
+        if (res.models.length > 0 && !vals.ai_runner_model) {
+          setVals(v => ({ ...v, ai_runner_model: res.models[0] }))
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load AI models", e)
+    } finally {
+      setLoadingAiModels(false)
+    }
+  }
+
+  useEffect(() => {
+    loadAiModels()
+  }, [])
 
   useEffect(() => { if (initSettings && Object.keys(initSettings).length) setVals(v => ({ ...v, ...initSettings })) }, [initSettings])
 
@@ -452,29 +475,45 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
             <select className="f-sel" value={vals.ocr_provider || 'ocr_space'} onChange={sl('ocr_provider')}>
               <option value="ocr_space">OCR.space Cloud API</option>
               <option value="local">Local Traditional OCR (EasyOCR / PaddleOCR)</option>
-              <option value="gemma4">Gemma 4 Vision AI (Local Ollama LLM)</option>
+              <option value="docker_ai">Docker AI Model Runner (Gemma 4 / Vision AI)</option>
             </select>
           </div>
 
-          {vals.ocr_provider === 'gemma4' ? (
+          {vals.ocr_provider === 'docker_ai' || vals.ocr_provider === 'gemma4' ? (
             <>
               <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
-                <span>Gemma 4 Ollama Endpoint</span>
+                <span>AI Model Runner Endpoint</span>
                 <input
                   type="text"
                   className="f-input"
-                  value={vals.gemma4_endpoint || 'http://host.docker.internal:11434'}
-                  onChange={sl('gemma4_endpoint')}
+                  value={vals.ai_runner_endpoint || 'http://host.docker.internal:11434'}
+                  onChange={sl('ai_runner_endpoint')}
                   placeholder="http://host.docker.internal:11434"
                   style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
                 />
               </div>
-              <div className="s-option"><span>Gemma 4 Model Tag</span>
-                <select className="f-sel" value={vals.gemma4_model || 'gemma4:e2b'} onChange={sl('gemma4_model')}>
-                  <option value="gemma4:e2b">gemma4:e2b (Fast / 5.1B Multimodal Vision)</option>
-                  <option value="gemma4:12b">gemma4:12b (High Accuracy / 12B Multimodal Vision)</option>
-                  <option value="qwen2.5vl:7b">qwen2.5vl:7b (Qwen Vision Language 7B)</option>
-                </select>
+              <div className="s-option"><span>Available Machine Model</span>
+                <div style={{ display: 'flex', gap: '6px', width: '100%' }}>
+                  <select className="f-sel" style={{ flex: 1 }} value={vals.ai_runner_model || (availableAiModels[0] || 'gemma4:e2b')} onChange={sl('ai_runner_model')}>
+                    {availableAiModels.length > 0 ? (
+                      availableAiModels.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))
+                    ) : (
+                      <option value={vals.ai_runner_model || 'gemma4:e2b'}>{vals.ai_runner_model || 'gemma4:e2b'}</option>
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={loadAiModels}
+                    disabled={loadingAiModels}
+                    className="btn-secondary"
+                    style={{ padding: '3px 8px', fontSize: '10px' }}
+                    title="Refresh local models"
+                  >
+                    <i className={`fa-solid fa-arrows-rotate ${loadingAiModels ? 'fa-spin' : ''}`} />
+                  </button>
+                </div>
               </div>
             </>
           ) : vals.ocr_provider === 'local' ? (
