@@ -64,11 +64,18 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
   useEffect(() => {
     if (tab === 'detection') {
       checkOcrQuota()
-      loadAiModels()
+      loadAiModels(vals.ai_runner_endpoint)
     }
   }, [tab])
 
-  useEffect(() => { if (initSettings && Object.keys(initSettings).length) setVals(v=>({...v,...initSettings})) }, [initSettings])
+  useEffect(() => {
+    if (initSettings && Object.keys(initSettings).length) {
+      setVals(v => ({ ...v, ...initSettings }))
+      if (initSettings.ai_runner_endpoint) {
+        loadAiModels(initSettings.ai_runner_endpoint)
+      }
+    }
+  }, [initSettings])
 
   const sl = (key) => (e) => setVals(v => ({...v, [key]: e.target.value}))
   const tog = (key) => () => setVals(v => ({...v, [key]: v[key]==='true'?'false':'true'}))
@@ -145,13 +152,13 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
 
                 {vals.ocr_provider === 'docker_ai' || vals.ocr_provider === 'gemma4' ? (
                   <>
-                    <SettingRow label="Docker Model Runner Endpoint" desc="Local Docker Model Runner OpenAI endpoint (port 12434)">
+                    <SettingRow label="AI Model Runner Base URL" desc="Base URL for any runner (e.g. http://host.docker.internal:12434 or :11434)">
                       <input
                         type="text"
                         className="f-input"
-                        value={vals.ai_runner_endpoint || 'http://host.docker.internal:12434'}
+                        value={vals.ai_runner_endpoint}
                         onChange={sl('ai_runner_endpoint')}
-                        placeholder="http://host.docker.internal:12434"
+                        placeholder="e.g. http://host.docker.internal:12434 or http://host.docker.internal:11434"
                         style={{width:'100%',padding:'6px 10px',borderRadius:'6px',border:'1px solid var(--border)',background:'var(--bg-card)',color:'var(--text)'}}
                       />
                     </SettingRow>

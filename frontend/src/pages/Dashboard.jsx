@@ -484,13 +484,13 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
           {vals.ocr_provider === 'docker_ai' || vals.ocr_provider === 'gemma4' ? (
             <>
               <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
-                <span>Docker Model Runner Endpoint</span>
+                <span>AI Model Runner Base URL</span>
                 <input
                   type="text"
                   className="f-input"
-                  value={vals.ai_runner_endpoint || 'http://host.docker.internal:12434'}
+                  value={vals.ai_runner_endpoint}
                   onChange={sl('ai_runner_endpoint')}
-                  placeholder="http://host.docker.internal:12434"
+                  placeholder="e.g. http://host.docker.internal:12434 or :11434"
                   style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
                 />
               </div>
