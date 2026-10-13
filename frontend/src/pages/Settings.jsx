@@ -21,6 +21,8 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
     ocr_space_api_key: 'K89291931288957',
     ocr_engine: '2',
     local_ocr_backend: 'easyocr',
+    gemma4_endpoint: 'http://host.docker.internal:11434',
+    gemma4_model: 'gemma4:e2b',
   })
   const [saved, setSaved] = useState(false)
   const [quotaInfo, setQuotaInfo] = useState(null)
@@ -114,11 +116,32 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
                 <SettingRow label="OCR Service Provider">
                   <select className="f-sel" value={vals.ocr_provider || 'ocr_space'} onChange={sl('ocr_provider')}>
                     <option value="ocr_space">OCR.space Cloud API</option>
-                    <option value="local">Local Engine (On-Premises / Offline)</option>
+                    <option value="local">Local Traditional OCR (EasyOCR / PaddleOCR)</option>
+                    <option value="gemma4">Gemma 4 Vision AI (Local Ollama LLM)</option>
                   </select>
                 </SettingRow>
 
-                {vals.ocr_provider === 'local' ? (
+                {vals.ocr_provider === 'gemma4' ? (
+                  <>
+                    <SettingRow label="Gemma 4 Ollama Endpoint" desc="Local Ollama instance port (default: host.docker.internal:11434)">
+                      <input
+                        type="text"
+                        className="f-input"
+                        value={vals.gemma4_endpoint || 'http://host.docker.internal:11434'}
+                        onChange={sl('gemma4_endpoint')}
+                        placeholder="http://host.docker.internal:11434"
+                        style={{width:'100%',padding:'6px 10px',borderRadius:'6px',border:'1px solid var(--border)',background:'var(--bg-card)',color:'var(--text)'}}
+                      />
+                    </SettingRow>
+                    <SettingRow label="Gemma 4 Model Tag" desc="Downloaded vision model tag in Ollama">
+                      <select className="f-sel" value={vals.gemma4_model || 'gemma4:e2b'} onChange={sl('gemma4_model')}>
+                        <option value="gemma4:e2b">gemma4:e2b (Fast / 5.1B Multimodal Vision)</option>
+                        <option value="gemma4:12b">gemma4:12b (High Accuracy / 12B Multimodal Vision)</option>
+                        <option value="qwen2.5vl:7b">qwen2.5vl:7b (Qwen Vision Language 7B)</option>
+                      </select>
+                    </SettingRow>
+                  </>
+                ) : vals.ocr_provider === 'local' ? (
                   <SettingRow label="Local OCR Engine" desc="Select the locally hosted computer vision engine running inside the pipeline">
                     <select className="f-sel" value={vals.local_ocr_backend || 'easyocr'} onChange={sl('local_ocr_backend')}>
                       <option value="easyocr">EasyOCR (Fast CPU / PyTorch Deep Learning)</option>

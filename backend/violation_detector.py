@@ -293,6 +293,67 @@ def _call_ocr_space(image_bgr, api_key: str = "K89291931288957", engine: str = "
         return []
 
 
+def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:11434", model: str = "gemma4:e2b") -> Optional[str]:
+    """
+    Calls local Ollama multimodal Gemma 4 Vision model to read license plate characters directly from crop.
+    Returns cleaned alphanumeric plate string or None.
+    """
+    import base64
+    import requests
+    import re
+
+    ok, buf = cv.imencode(".jpg", image_bgr, [cv.IMWRITE_JPEG_QUALITY, 92])
+    if not ok:
+        return None
+
+    b64_img = base64.b64encode(buf.tobytes()).decode("utf-8")
+    url = f"{endpoint.rstrip('/')}/api/generate"
+    prompt = (
+        "You are an expert Automatic License Plate Recognition (ALPR) system. "
+        "Inspect this vehicle crop and extract ONLY the vehicle's license plate numbers and English letters. "
+        "Do NOT include car brands, makes, or models (like FORD, GMC, TOYOTA, HYUNDAI). "
+        "Respond strictly with the plate text only (e.g. '1234 ABC'), with no conversational filler or markdown."
+    )
+
+    payload = {
+        "model": model or "gemma4:e2b",
+        "prompt": prompt,
+        "images": [b64_img],
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 30,
+        }
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=25)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_text = (data.get("response") or "").strip()
+            # Clean up unwanted formatting or prefixes
+            cleaned = re.sub(r'[^A-Za-z0-9\s]', '', raw_text).strip()
+            # Filter out brand names
+            brand_names = {"FORD", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "GMC", "CHEVROLET", "ISUZU"}
+            words = [w.upper() for w in cleaned.split() if w.upper() not in brand_names]
+            final = " ".join(words).strip()
+            if final and (any(c.isdigit() for c in final) or len(final) >= 3):
+                print(f"  [Gemma4 Vision] Successfully extracted license plate: '{final}'")
+                return final
+        else:
+            print(f"  [Gemma4 Vision] API returned HTTP {resp.status_code}: {resp.text[:80]}")
+    except Exception as e:
+        print(f"  [Gemma4 Vision] Request failed: {e}")
+        from camera_manager import get_camera_manager
+        cm = get_camera_manager()
+        if cm and cm.loop:
+            asyncio.run_coroutine_threadsafe(
+                cm.broadcast_ocr_toast(f"Gemma 4 notice: {str(e)[:50]}", toast_type="warning", title="Gemma 4 AI"),
+                cm.loop
+            )
+    return None
+
+
 def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], Optional[Tuple[int, int, int, int]]]:
     """
     Extracts the license plate text (English only) from a vehicle crop.
@@ -323,6 +384,20 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
         ocr_engine = settings.get("ocr_engine", "2")
         ocr_api_key = settings.get("ocr_space_api_key", "K89291931288957")
         local_backend = settings.get("local_ocr_backend", "easyocr")
+        gemma4_endpoint = settings.get("gemma4_endpoint", "http://host.docker.internal:11434")
+        gemma4_model = settings.get("gemma4_model", "gemma4:e2b")
+
+        # Gemma 4 Local Vision AI mode
+        if ocr_provider == "gemma4":
+            gemma_plate = _call_gemma4_vision(lower_portion, endpoint=gemma4_endpoint, model=gemma4_model)
+            if not gemma_plate and h >= 80:
+                wider_crop = vehicle_crop[int(h * 0.25):int(h * 1.0), 0:w]
+                if wider_crop.size > 0:
+                    gemma_plate = _call_gemma4_vision(wider_crop, endpoint=gemma4_endpoint, model=gemma4_model)
+            if gemma_plate:
+                coords = (int(w * 0.15), int(h * 0.55), int(w * 0.85), int(h * 0.95))
+                return None, gemma_plate, coords
+            return None, None, None
 
         # Resolution boost: upscale small plate regions to >=220px height for crisp edge clarity
         lh, lw = lower_portion.shape[:2]
