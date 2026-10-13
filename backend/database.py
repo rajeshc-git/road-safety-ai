@@ -69,6 +69,7 @@ DEFAULT_SETTINGS = {
     "ocr_provider": "ocr_space",
     "ocr_space_api_key": "K89291931288957",
     "ocr_engine": "2",
+    "local_ocr_backend": "easyocr",
 }
 
 

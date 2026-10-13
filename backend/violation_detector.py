@@ -28,60 +28,60 @@ def _save_violation_images(snap_path: Optional[str], frame, crop_path: Optional[
         cv.imwrite(crop_path, crop, [cv.IMWRITE_JPEG_QUALITY, quality])
 
 
-_ocr_reader = None
-_ocr_backend = None
+_ocr_readers = {}
 _ocr_lock = threading.Lock()
 
 
-def get_ocr_reader():
-    """Lazy initializer supporting EasyOCR (default) or PaddleOCR."""
-    global _ocr_reader, _ocr_backend
+def get_ocr_reader(preferred_backend: str = "easyocr"):
+    """Lazy initializer supporting EasyOCR or PaddleOCR based on user setting."""
+    global _ocr_readers
+    backend = preferred_backend.strip().lower() if preferred_backend else "easyocr"
+    if backend not in ("easyocr", "paddleocr"):
+        backend = "easyocr"
+
     with _ocr_lock:
-        if _ocr_reader is not None or _ocr_backend == "none":
-            return _ocr_reader, _ocr_backend
+        if backend in _ocr_readers:
+            return _ocr_readers[backend], backend
 
-        # 1. Try EasyOCR first (fast, PyTorch-integrated, native Python 3.13 support)
-        try:
-            # pyrefly: ignore [missing-import]
-            import torch
-            # Limit threads per OCR inference on CPU
-            if hasattr(torch, 'set_num_threads'):
-                try:
-                    torch.set_num_threads(2)
-                except Exception:
-                    pass
-            # pyrefly: ignore [missing-import]
-            import easyocr
-            use_gpu = torch.cuda.is_available()
-            _ocr_reader = easyocr.Reader(['en'], gpu=use_gpu)
-            _ocr_backend = "easyocr"
-            print(f"  [OCR] [OK] Loaded EasyOCR reader (GPU: {use_gpu})")
-            return _ocr_reader, _ocr_backend
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"  [OCR] EasyOCR init notice: {e}")
+        if backend == "easyocr":
+            try:
+                # pyrefly: ignore [missing-import]
+                import torch
+                if hasattr(torch, 'set_num_threads'):
+                    try:
+                        torch.set_num_threads(2)
+                    except Exception:
+                        pass
+                # pyrefly: ignore [missing-import]
+                import easyocr
+                use_gpu = torch.cuda.is_available()
+                reader = easyocr.Reader(['en'], gpu=use_gpu)
+                _ocr_readers["easyocr"] = reader
+                print(f"  [OCR] [OK] Loaded EasyOCR reader (GPU: {use_gpu})")
+                return reader, "easyocr"
+            except Exception as e:
+                print(f"  [OCR] EasyOCR init failed: {e}")
 
-        # 2. Try PaddleOCR fallback
-        try:
-            import os
-            os.environ["FLAGS_use_onednn"] = "0"
-            os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-            # pyrefly: ignore [missing-import]
-            import torch
-            # pyrefly: ignore [missing-import]
-            from paddleocr import PaddleOCR
-            _ocr_reader = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
-            _ocr_backend = "paddleocr"
-            print("  [OCR] [OK] Loaded PaddleOCR reader")
-            return _ocr_reader, _ocr_backend
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"  [OCR] PaddleOCR init notice: {e}")
+        elif backend == "paddleocr":
+            try:
+                import os
+                os.environ["FLAGS_use_onednn"] = "0"
+                os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+                # pyrefly: ignore [missing-import]
+                from paddleocr import PaddleOCR
+                reader = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
+                _ocr_readers["paddleocr"] = reader
+                print("  [OCR] [OK] Loaded PaddleOCR reader")
+                return reader, "paddleocr"
+            except Exception as e:
+                print(f"  [OCR] PaddleOCR init failed: {e}")
 
-        print("  [OCR] [WARN] OCR reader not installed. License plate text recognition is bypassed.")
-        _ocr_backend = "none"
+        # Fallback to whichever is available
+        for fallback_backend in ("easyocr", "paddleocr"):
+            if fallback_backend in _ocr_readers:
+                return _ocr_readers[fallback_backend], fallback_backend
+
+        print(f"  [OCR] [WARN] Local OCR reader '{backend}' not available.")
         return None, "none"
 
 
@@ -226,6 +226,7 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
         ocr_provider = settings.get("ocr_provider", "ocr_space")
         ocr_engine = settings.get("ocr_engine", "2")
         ocr_api_key = settings.get("ocr_space_api_key", "K89291931288957")
+        local_backend = settings.get("local_ocr_backend", "easyocr")
 
         # Resolution boost: upscale small plate regions to >=220px height for crisp edge clarity
         lh, lw = lower_portion.shape[:2]
@@ -300,9 +301,9 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
                         x_start, y_start = x_w_start, y_w_start
                         scale = scale_w
 
-        # 2. Local fallback ONLY if provider is explicitly set to 'local' or OCR.space is not selected
+        # 2. Local fallback ONLY if provider is explicitly set to 'local'
         if not raw_detections and ocr_provider == "local":
-            reader, backend = get_ocr_reader()
+            reader, backend = get_ocr_reader(local_backend)
             if reader and backend == "easyocr":
                 with _ocr_lock:
                     results = reader.readtext(ocr_input)
@@ -328,7 +329,7 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
             if wider_crop.size > 0:
                 scale = max(2.0, 220.0 / max(1, wider_crop.shape[0]))
                 wider_input = cv.resize(wider_crop, None, fx=scale, fy=scale, interpolation=cv.INTER_CUBIC)
-                reader, backend = get_ocr_reader()
+                reader, backend = get_ocr_reader(local_backend)
                 if reader and backend == "easyocr":
                     with _ocr_lock:
                         results = reader.readtext(wider_input)

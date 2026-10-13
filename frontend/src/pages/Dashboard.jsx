@@ -372,6 +372,7 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
     ocr_provider: initSettings?.ocr_provider || 'ocr_space',
     ocr_space_api_key: initSettings?.ocr_space_api_key || 'K89291931288957',
     ocr_engine: initSettings?.ocr_engine || '2',
+    local_ocr_backend: initSettings?.local_ocr_backend || 'easyocr',
   })
 
   const [saved, setSaved] = useState(false)
@@ -427,31 +428,43 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
           <Slider label="Look Away Trigger" value={vals.dms_look_away_threshold || '3.0'} min={0.5} max={10.0} step={0.5} unit="seconds" onChange={sl('dms_look_away_threshold')} desc="Time driver is not looking at the road continuously to trigger warning" />
           <Slider label="Phone Distraction Trigger" value={vals.dms_phone_distraction_threshold || '1.0'} min={0.2} max={5.0} step={0.1} unit="seconds" onChange={sl('dms_phone_distraction_threshold')} desc="Time driver is holding a phone continuously to trigger warning" />
 
-          <div className="s-group-title" style={{ marginTop: 15 }}>License Plate OCR (OCR.space API)</div>
-          <div className="s-option"><span>OCR Service</span>
+          <div className="s-group-title" style={{ marginTop: 15 }}>License Plate OCR Configuration</div>
+          <div className="s-option"><span>OCR Service Provider</span>
             <select className="f-sel" value={vals.ocr_provider || 'ocr_space'} onChange={sl('ocr_provider')}>
               <option value="ocr_space">OCR.space Cloud API</option>
-              <option value="local">Local Engine (EasyOCR / PaddleOCR)</option>
+              <option value="local">Local Engine (On-Premises / Offline)</option>
             </select>
           </div>
-          <div className="s-option"><span>OCR.space Engine</span>
-            <select className="f-sel" value={vals.ocr_engine || '2'} onChange={sl('ocr_engine')}>
-              <option value="1">Engine 1 (Fast / Legacy)</option>
-              <option value="2">Engine 2 (Recommended - Optimal for Plates & Digits)</option>
-              <option value="3">Engine 3 (AI / LLM-Powered High Precision)</option>
-            </select>
-          </div>
-          <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
-            <span>OCR.space API Key</span>
-            <input
-              type="text"
-              className="f-input"
-              value={vals.ocr_space_api_key || 'K89291931288957'}
-              onChange={sl('ocr_space_api_key')}
-              placeholder="Enter OCR.space API Key"
-              style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
-            />
-          </div>
+
+          {vals.ocr_provider === 'local' ? (
+            <div className="s-option"><span>Local OCR Engine</span>
+              <select className="f-sel" value={vals.local_ocr_backend || 'easyocr'} onChange={sl('local_ocr_backend')}>
+                <option value="easyocr">EasyOCR (Fast CPU / PyTorch)</option>
+                <option value="paddleocr">PaddleOCR (PP-OCR Lightweight)</option>
+              </select>
+            </div>
+          ) : (
+            <>
+              <div className="s-option"><span>OCR.space Engine</span>
+                <select className="f-sel" value={vals.ocr_engine || '2'} onChange={sl('ocr_engine')}>
+                  <option value="1">Engine 1 (Fast / Legacy)</option>
+                  <option value="2">Engine 2 (Recommended - Optimal for Plates & Digits)</option>
+                  <option value="3">Engine 3 (AI / LLM-Powered High Precision)</option>
+                </select>
+              </div>
+              <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
+                <span>OCR.space API Key</span>
+                <input
+                  type="text"
+                  className="f-input"
+                  value={vals.ocr_space_api_key || 'K89291931288957'}
+                  onChange={sl('ocr_space_api_key')}
+                  placeholder="Enter OCR.space API Key"
+                  style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
+                />
+              </div>
+            </>
+          )}
         </>}
         {tab === 'storage' && <>
           <div className="s-group-title">Storage Settings</div>
