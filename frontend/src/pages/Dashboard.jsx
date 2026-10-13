@@ -390,8 +390,8 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
     ocr_space_api_key: initSettings?.ocr_space_api_key || 'K89291931288957',
     ocr_engine: initSettings?.ocr_engine || '2',
     local_ocr_backend: initSettings?.local_ocr_backend || 'easyocr',
-    ai_runner_endpoint: initSettings?.ai_runner_endpoint || initSettings?.gemma4_endpoint || 'http://host.docker.internal:11434',
-    ai_runner_model: initSettings?.ai_runner_model || initSettings?.gemma4_model || 'gemma4:e2b',
+    ai_runner_endpoint: initSettings?.ai_runner_endpoint || initSettings?.gemma4_endpoint || 'http://host.docker.internal:12434',
+    ai_runner_model: initSettings?.ai_runner_model || initSettings?.gemma4_model || '',
   })
 
   const [saved, setSaved] = useState(false)
@@ -477,7 +477,7 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
             <select className="f-sel" value={vals.ocr_provider || 'ocr_space'} onChange={sl('ocr_provider')}>
               <option value="ocr_space">OCR.space Cloud API</option>
               <option value="local">Local Traditional OCR (EasyOCR / PaddleOCR)</option>
-              <option value="docker_ai">Docker AI Model Runner (Gemma 4 / Vision AI)</option>
+              <option value="docker_ai">Local AI Vision Model Runner (Docker / Ollama / Custom)</option>
             </select>
           </div>
 
@@ -494,24 +494,26 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
                   style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
                 />
               </div>
-              <div className="s-option"><span>Docker Models on Machine</span>
+              <div className="s-option"><span>Selected AI Vision Model</span>
                 <div style={{ display: 'flex', gap: '6px', width: '100%' }}>
-                  <select className="f-sel" style={{ flex: 1 }} value={vals.ai_runner_model || (availableAiModels[0] || 'docker.io/ai/gemma4:latest')} onChange={sl('ai_runner_model')}>
+                  <select className="f-sel" style={{ flex: 1 }} value={vals.ai_runner_model || (availableAiModels[0] || '')} onChange={sl('ai_runner_model')}>
                     {availableAiModels.length > 0 ? (
                       availableAiModels.map(m => (
                         <option key={m} value={m}>{m}</option>
                       ))
+                    ) : vals.ai_runner_model ? (
+                      <option value={vals.ai_runner_model}>{vals.ai_runner_model}</option>
                     ) : (
-                      <option value={vals.ai_runner_model || 'docker.io/ai/gemma4:latest'}>{vals.ai_runner_model || 'docker.io/ai/gemma4:latest'}</option>
+                      <option value="">No models detected - click Scan</option>
                     )}
                   </select>
                   <button
                     type="button"
-                    onClick={loadAiModels}
+                    onClick={() => loadAiModels(vals.ai_runner_endpoint)}
                     disabled={loadingAiModels}
                     className="btn-secondary"
                     style={{ padding: '3px 8px', fontSize: '10px' }}
-                    title="Refresh Docker model list"
+                    title="Refresh model list from endpoint"
                   >
                     <i className={`fa-solid fa-arrows-rotate ${loadingAiModels ? 'fa-spin' : ''}`} />
                   </button>

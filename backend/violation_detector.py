@@ -292,13 +292,15 @@ def _call_ocr_space(image_bgr, api_key: str = "K89291931288957", engine: str = "
             )
         return []
 
-
-def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:12434", model: str = "docker.io/ai/gemma4:latest") -> Optional[str]:
+def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
     """
-    Calls local Docker Model Runner (port 12434) using OpenAI-compatible vision chat API
-    to read license plate characters directly from crop.
+    Calls local OpenAI-compatible / Docker / Ollama vision endpoint
+    with whatever model the user configured to read license plate characters.
     Returns cleaned alphanumeric plate string or None.
     """
+    if not model or not endpoint:
+        return None
+
     import base64
     import requests
     import re
@@ -310,10 +312,10 @@ def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:
     b64_img = base64.b64encode(buf.tobytes()).decode("utf-8")
     base_url = endpoint.rstrip("/")
 
-    # Docker Model Runner exposes OpenAI compatible /v1/chat/completions
+    # Standard OpenAI compatible /v1/chat/completions (Docker Model Runner, Ollama, vLLM, LMStudio, etc.)
     url = f"{base_url}/v1/chat/completions"
     payload = {
-        "model": model or "docker.io/ai/gemma4:latest",
+        "model": model,
         "messages": [
             {
                 "role": "user",
@@ -348,7 +350,7 @@ def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:
             if choices:
                 raw_text = choices[0].get("message", {}).get("content", "")
         else:
-            # Fallback to Ollama-style generate if /v1/chat/completions not available
+            # Fallback to Ollama native generate endpoint if /v1/chat/completions is not supported
             fallback_url = f"{base_url}/api/generate"
             fb_payload = {
                 "model": model,
@@ -366,25 +368,24 @@ def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:
             words = [w.upper() for w in cleaned.split() if w.upper() not in brand_names]
             final = " ".join(words).strip()
             if final and (any(c.isdigit() for c in final) or len(final) >= 3):
-                print(f"  [Docker Model Runner] Successfully extracted license plate: '{final}'")
+                print(f"  [AI Vision ({model})] Successfully extracted license plate: '{final}'")
                 return final
     except Exception as e:
-        print(f"  [Docker Model Runner] Request failed: {e}")
+        print(f"  [AI Vision ({model})] Request failed: {e}")
         from camera_manager import get_camera_manager
         cm = get_camera_manager()
         if cm and cm.loop:
             asyncio.run_coroutine_threadsafe(
-                cm.broadcast_ocr_toast(f"Docker AI Runner notice: {str(e)[:50]}", toast_type="warning", title="Docker Model Runner"),
+                cm.broadcast_ocr_toast(f"AI Runner notice: {str(e)[:50]}", toast_type="warning", title="AI Model Runner"),
                 cm.loop
             )
     return None
 
 
-
 def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], Optional[Tuple[int, int, int, int]]]:
     """
     Extracts the license plate text (English only) from a vehicle crop.
-    Supports OCR.space API (Engine 1, 2, 3) as configured in settings, with local EasyOCR/Paddle fallback.
+    Supports OCR.space API, local EasyOCR/Paddle, or any local AI Vision Model (Docker/Ollama/etc).
     Clusters adjacent tokens (both horizontal and stacked lines) so full plate digits and letters
     are combined, and draws a generous bounding box wrapping the entire license plate.
     """
@@ -411,20 +412,21 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
         ocr_engine = settings.get("ocr_engine", "2")
         ocr_api_key = settings.get("ocr_space_api_key", "K89291931288957")
         local_backend = settings.get("local_ocr_backend", "easyocr")
-        ai_runner_endpoint = settings.get("ai_runner_endpoint") or settings.get("gemma4_endpoint") or "http://host.docker.internal:12434"
-        ai_runner_model = settings.get("ai_runner_model") or settings.get("gemma4_model") or "docker.io/ai/gemma4:latest"
+        ai_runner_endpoint = (settings.get("ai_runner_endpoint") or settings.get("gemma4_endpoint") or "").strip()
+        ai_runner_model = (settings.get("ai_runner_model") or settings.get("gemma4_model") or "").strip()
 
-        # Docker AI Model Runner Vision mode
+        # Local AI Vision Model Runner mode (Docker Model Runner, Ollama, etc.)
         if ocr_provider in ("docker_ai", "gemma4"):
-            ai_plate = _call_gemma4_vision(lower_portion, endpoint=ai_runner_endpoint, model=ai_runner_model)
+            ai_plate = _call_ai_vision(lower_portion, endpoint=ai_runner_endpoint, model=ai_runner_model)
             if not ai_plate and h >= 80:
                 wider_crop = vehicle_crop[int(h * 0.25):int(h * 1.0), 0:w]
                 if wider_crop.size > 0:
-                    ai_plate = _call_gemma4_vision(wider_crop, endpoint=ai_runner_endpoint, model=ai_runner_model)
+                    ai_plate = _call_ai_vision(wider_crop, endpoint=ai_runner_endpoint, model=ai_runner_model)
             if ai_plate:
                 coords = (int(w * 0.15), int(h * 0.55), int(w * 0.85), int(h * 0.95))
                 return None, ai_plate, coords
             return None, None, None
+
 
         # Resolution boost: upscale small plate regions to >=220px height for crisp edge clarity
         lh, lw = lower_portion.shape[:2]
