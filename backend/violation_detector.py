@@ -315,11 +315,16 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
     # Standard OpenAI compatible /v1/chat/completions (Docker Model Runner, Ollama, vLLM, LMStudio, etc.)
     url = f"{base_url}/v1/chat/completions"
     system_msg = (
-        "You are an automated license plate reader. Read strictly the license plate letters and numbers clearly visible "
-        "on the vehicle bumper in the image. If the license plate is blurry, unreadable, obscured, or not clearly visible, "
-        "output NONE. Never invent, guess, or hallucinate plate characters."
+        "You are an expert automated license plate recognition (ALPR) system. "
+        "Locate the vehicle license plate (usually on the front bumper or grille). "
+        "Read and output strictly the license plate numbers and English letters (e.g. '9569 UUD', '4286 VER', '3986 KAD'). "
+        "Do NOT output vehicle brand names, car colors, or explanations. "
+        "If no plate or characters are visible or legible, respond ONLY with NONE."
     )
-    user_msg = "Read the vehicle license plate from this bumper image. If not legible or not clearly visible, output NONE. Output ONLY the license plate characters or NONE."
+    user_msg = (
+        "Read the vehicle license plate numbers and English letters from this image. "
+        "Output ONLY the plate numbers and English letters, or NONE if not readable."
+    )
 
     payload = {
         "model": model,
@@ -344,8 +349,8 @@ def _call_ai_vision(image_bgr, endpoint: str, model: str) -> Optional[str]:
                 ]
             }
         ],
-        "temperature": 0.0,
-        "max_tokens": 20
+        "temperature": 0.1,
+        "max_tokens": 25
     }
 
     try:
@@ -446,7 +451,12 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
 
         # Local AI Vision Model Runner mode (Docker Model Runner, Ollama, etc.)
         if ocr_provider in ("docker_ai", "gemma4"):
-            ai_plate = _call_ai_vision(lower_portion, endpoint=ai_runner_endpoint, model=ai_runner_model)
+            # 1. First try the full vehicle crop directly so Vision models have complete context
+            ai_plate = _call_ai_vision(vehicle_crop, endpoint=ai_runner_endpoint, model=ai_runner_model)
+            # 2. If not detected, try the lower bumper portion
+            if not ai_plate and lower_portion.size > 0:
+                ai_plate = _call_ai_vision(lower_portion, endpoint=ai_runner_endpoint, model=ai_runner_model)
+            # 3. If still not detected, try wider lower crop
             if not ai_plate and h >= 80:
                 wider_crop = vehicle_crop[int(h * 0.25):int(h * 1.0), 0:w]
                 if wider_crop.size > 0:
