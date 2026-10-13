@@ -482,25 +482,25 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
           {vals.ocr_provider === 'docker_ai' || vals.ocr_provider === 'gemma4' ? (
             <>
               <div className="s-option" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '6px' }}>
-                <span>AI Model Runner Endpoint</span>
+                <span>Docker Model Runner Endpoint</span>
                 <input
                   type="text"
                   className="f-input"
-                  value={vals.ai_runner_endpoint || 'http://host.docker.internal:11434'}
+                  value={vals.ai_runner_endpoint || 'http://host.docker.internal:12434'}
                   onChange={sl('ai_runner_endpoint')}
-                  placeholder="http://host.docker.internal:11434"
+                  placeholder="http://host.docker.internal:12434"
                   style={{ width: '100%', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)' }}
                 />
               </div>
-              <div className="s-option"><span>Available Machine Model</span>
+              <div className="s-option"><span>Docker Models on Machine</span>
                 <div style={{ display: 'flex', gap: '6px', width: '100%' }}>
-                  <select className="f-sel" style={{ flex: 1 }} value={vals.ai_runner_model || (availableAiModels[0] || 'gemma4:e2b')} onChange={sl('ai_runner_model')}>
+                  <select className="f-sel" style={{ flex: 1 }} value={vals.ai_runner_model || (availableAiModels[0] || 'docker.io/ai/gemma4:latest')} onChange={sl('ai_runner_model')}>
                     {availableAiModels.length > 0 ? (
                       availableAiModels.map(m => (
                         <option key={m} value={m}>{m}</option>
                       ))
                     ) : (
-                      <option value={vals.ai_runner_model || 'gemma4:e2b'}>{vals.ai_runner_model || 'gemma4:e2b'}</option>
+                      <option value={vals.ai_runner_model || 'docker.io/ai/gemma4:latest'}>{vals.ai_runner_model || 'docker.io/ai/gemma4:latest'}</option>
                     )}
                   </select>
                   <button
@@ -509,7 +509,7 @@ function SettingsPanel({ settings: initSettings, onSaveSettings }) {
                     disabled={loadingAiModels}
                     className="btn-secondary"
                     style={{ padding: '3px 8px', fontSize: '10px' }}
-                    title="Refresh local models"
+                    title="Refresh Docker model list"
                   >
                     <i className={`fa-solid fa-arrows-rotate ${loadingAiModels ? 'fa-spin' : ''}`} />
                   </button>

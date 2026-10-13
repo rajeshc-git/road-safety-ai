@@ -293,9 +293,10 @@ def _call_ocr_space(image_bgr, api_key: str = "K89291931288957", engine: str = "
         return []
 
 
-def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:11434", model: str = "gemma4:e2b") -> Optional[str]:
+def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:12434", model: str = "docker.io/ai/gemma4:latest") -> Optional[str]:
     """
-    Calls local Ollama multimodal Gemma 4 Vision model to read license plate characters directly from crop.
+    Calls local Docker Model Runner (port 12434) using OpenAI-compatible vision chat API
+    to read license plate characters directly from crop.
     Returns cleaned alphanumeric plate string or None.
     """
     import base64
@@ -307,51 +308,77 @@ def _call_gemma4_vision(image_bgr, endpoint: str = "http://host.docker.internal:
         return None
 
     b64_img = base64.b64encode(buf.tobytes()).decode("utf-8")
-    url = f"{endpoint.rstrip('/')}/api/generate"
-    prompt = (
-        "You are an expert Automatic License Plate Recognition (ALPR) system. "
-        "Inspect this vehicle crop and extract ONLY the vehicle's license plate numbers and English letters. "
-        "Do NOT include car brands, makes, or models (like FORD, GMC, TOYOTA, HYUNDAI). "
-        "Respond strictly with the plate text only (e.g. '1234 ABC'), with no conversational filler or markdown."
-    )
+    base_url = endpoint.rstrip("/")
 
+    # Docker Model Runner exposes OpenAI compatible /v1/chat/completions
+    url = f"{base_url}/v1/chat/completions"
     payload = {
-        "model": model or "gemma4:e2b",
-        "prompt": prompt,
-        "images": [b64_img],
-        "stream": False,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 30,
-        }
+        "model": model or "docker.io/ai/gemma4:latest",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract ONLY the vehicle license plate numbers and English letters from this image. "
+                            "Do NOT include car brand names or conversational text. "
+                            "Output only the plate characters, e.g. '1234 ABC'."
+                        )
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{b64_img}"
+                        }
+                    }
+                ]
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 40
     }
 
     try:
         resp = requests.post(url, json=payload, timeout=25)
+        raw_text = ""
         if resp.status_code == 200:
             data = resp.json()
-            raw_text = (data.get("response") or "").strip()
-            # Clean up unwanted formatting or prefixes
+            choices = data.get("choices", [])
+            if choices:
+                raw_text = choices[0].get("message", {}).get("content", "")
+        else:
+            # Fallback to Ollama-style generate if /v1/chat/completions not available
+            fallback_url = f"{base_url}/api/generate"
+            fb_payload = {
+                "model": model,
+                "prompt": "Extract strictly the license plate letters and numbers from this car crop without brand names.",
+                "images": [b64_img],
+                "stream": False
+            }
+            fb_resp = requests.post(fallback_url, json=fb_payload, timeout=20)
+            if fb_resp.status_code == 200:
+                raw_text = fb_resp.json().get("response", "")
+
+        if raw_text:
             cleaned = re.sub(r'[^A-Za-z0-9\s]', '', raw_text).strip()
-            # Filter out brand names
             brand_names = {"FORD", "TOYOTA", "HONDA", "HYUNDAI", "NISSAN", "GMC", "CHEVROLET", "ISUZU"}
             words = [w.upper() for w in cleaned.split() if w.upper() not in brand_names]
             final = " ".join(words).strip()
             if final and (any(c.isdigit() for c in final) or len(final) >= 3):
-                print(f"  [Gemma4 Vision] Successfully extracted license plate: '{final}'")
+                print(f"  [Docker Model Runner] Successfully extracted license plate: '{final}'")
                 return final
-        else:
-            print(f"  [Gemma4 Vision] API returned HTTP {resp.status_code}: {resp.text[:80]}")
     except Exception as e:
-        print(f"  [Gemma4 Vision] Request failed: {e}")
+        print(f"  [Docker Model Runner] Request failed: {e}")
         from camera_manager import get_camera_manager
         cm = get_camera_manager()
         if cm and cm.loop:
             asyncio.run_coroutine_threadsafe(
-                cm.broadcast_ocr_toast(f"Gemma 4 notice: {str(e)[:50]}", toast_type="warning", title="Gemma 4 AI"),
+                cm.broadcast_ocr_toast(f"Docker AI Runner notice: {str(e)[:50]}", toast_type="warning", title="Docker Model Runner"),
                 cm.loop
             )
     return None
+
 
 
 def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], Optional[Tuple[int, int, int, int]]]:
@@ -384,8 +411,8 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
         ocr_engine = settings.get("ocr_engine", "2")
         ocr_api_key = settings.get("ocr_space_api_key", "K89291931288957")
         local_backend = settings.get("local_ocr_backend", "easyocr")
-        ai_runner_endpoint = settings.get("ai_runner_endpoint") or settings.get("gemma4_endpoint") or "http://host.docker.internal:11434"
-        ai_runner_model = settings.get("ai_runner_model") or settings.get("gemma4_model") or "gemma4:e2b"
+        ai_runner_endpoint = settings.get("ai_runner_endpoint") or settings.get("gemma4_endpoint") or "http://host.docker.internal:12434"
+        ai_runner_model = settings.get("ai_runner_model") or settings.get("gemma4_model") or "docker.io/ai/gemma4:latest"
 
         # Docker AI Model Runner Vision mode
         if ocr_provider in ("docker_ai", "gemma4"):

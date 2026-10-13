@@ -70,8 +70,8 @@ DEFAULT_SETTINGS = {
     "ocr_space_api_key": "K89291931288957",
     "ocr_engine": "2",
     "local_ocr_backend": "easyocr",
-    "ai_runner_endpoint": "http://host.docker.internal:11434",
-    "ai_runner_model": "gemma4:e2b",
+    "ai_runner_endpoint": "http://host.docker.internal:12434",
+    "ai_runner_model": "docker.io/ai/gemma4:latest",
 }
 
 

@@ -315,15 +315,17 @@ async def get_ocr_quota():
 
 @app.get("/api/ai-models")
 async def list_ai_models():
-    """Dynamically queries the local Docker AI model runner to list all available installed models."""
+    """Dynamically queries the Docker Model Runner (port 12434) to list all available installed Docker models."""
     settings = await db.get_settings()
-    endpoint = settings.get("ai_runner_endpoint", "http://host.docker.internal:11434").rstrip("/")
+    endpoint = settings.get("ai_runner_endpoint", "http://host.docker.internal:12434").rstrip("/")
     try:
         import requests
-        resp = requests.get(f"{endpoint}/api/tags", timeout=4)
+        # Query Docker Model Runner OpenAI-compatible endpoint
+        resp = requests.get(f"{endpoint}/v1/models", timeout=4)
         if resp.status_code == 200:
             data = resp.json()
-            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+            # Extract Docker Model Runner model IDs
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
             return {"success": True, "models": models, "endpoint": endpoint}
         return {"success": False, "models": [], "error": f"HTTP {resp.status_code}"}
     except Exception as e:
