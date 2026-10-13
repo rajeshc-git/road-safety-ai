@@ -210,12 +210,12 @@ def _extract_license_plate(vehicle_crop) -> Tuple[Optional[str], Optional[str], 
     try:
         h, w = vehicle_crop.shape[:2]
         
-        # Bounding box crop: focus on wider bumper and grille area (35% to 98% height, 4% to 96% width)
-        # Guarantees complete plate badge is included across sedans, SUVs, pickups, and trucks
-        y_start = int(h * 0.35)
+        # Bounding box crop: focus strictly on bumper plate mount area (48% to 98% height, 6% to 94% width)
+        # Excludes upper radiator honeycomb grille, brand emblems (Ford, Hyundai) and windshield reflections
+        y_start = int(h * 0.48)
         y_end = int(h * 0.98)
-        x_start = int(w * 0.04)
-        x_end = int(w * 0.96)
+        x_start = int(w * 0.06)
+        x_end = int(w * 0.94)
         
         lower_portion = vehicle_crop[y_start:y_end, x_start:x_end]
         if lower_portion.size == 0:
