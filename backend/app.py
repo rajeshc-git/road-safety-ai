@@ -314,19 +314,29 @@ async def get_ocr_quota():
 
 
 @app.get("/api/ai-models")
-async def list_ai_models():
-    """Dynamically queries the Docker Model Runner (port 12434) to list all available installed Docker models."""
-    settings = await db.get_settings()
-    endpoint = settings.get("ai_runner_endpoint", "http://host.docker.internal:12434").rstrip("/")
+async def list_ai_models(endpoint: Optional[str] = None):
+    """Dynamically queries the AI runner endpoint (/v1/models or /api/tags) to list available models."""
+    if not endpoint:
+        settings = await db.get_settings()
+        endpoint = settings.get("ai_runner_endpoint", "http://host.docker.internal:12434")
+    target_endpoint = str(endpoint).strip().rstrip("/")
     try:
         import requests
-        # Query Docker Model Runner OpenAI-compatible endpoint
-        resp = requests.get(f"{endpoint}/v1/models", timeout=4)
+        # 1. First try OpenAI-compatible standard /v1/models (supported by Docker Model Runner, Ollama, vLLM, etc.)
+        resp = requests.get(f"{target_endpoint}/v1/models", timeout=4)
         if resp.status_code == 200:
             data = resp.json()
-            # Extract Docker Model Runner model IDs
             models = [m.get("id") for m in data.get("data", []) if m.get("id")]
-            return {"success": True, "models": models, "endpoint": endpoint}
+            if models:
+                return {"success": True, "models": models, "endpoint": target_endpoint}
+
+        # 2. Fallback to native /api/tags if /v1/models returned empty
+        resp2 = requests.get(f"{target_endpoint}/api/tags", timeout=4)
+        if resp2.status_code == 200:
+            data2 = resp2.json()
+            models2 = [m.get("name") for m in data2.get("models", []) if m.get("name")]
+            return {"success": True, "models": models2, "endpoint": target_endpoint}
+
         return {"success": False, "models": [], "error": f"HTTP {resp.status_code}"}
     except Exception as e:
         return {"success": False, "models": [], "error": str(e)}

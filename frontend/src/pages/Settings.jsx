@@ -42,13 +42,15 @@ export default function SettingsPage({ settings: initSettings, onSaveSettings })
     }
   }
 
-  const loadAiModels = async () => {
+  const loadAiModels = async (overrideEndpoint) => {
     setLoadingAiModels(true)
     try {
-      const res = await api.get('/api/ai-models')
+      const ep = overrideEndpoint || vals.ai_runner_endpoint
+      const q = ep ? `?endpoint=${encodeURIComponent(ep)}` : ''
+      const res = await api.get(`/api/ai-models${q}`)
       if (res && res.success && Array.isArray(res.models)) {
         setAvailableAiModels(res.models)
-        if (res.models.length > 0 && !vals.ai_runner_model) {
+        if (res.models.length > 0 && !res.models.includes(vals.ai_runner_model)) {
           setVals(v => ({ ...v, ai_runner_model: res.models[0] }))
         }
       }
